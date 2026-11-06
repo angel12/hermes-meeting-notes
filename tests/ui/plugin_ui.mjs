@@ -423,6 +423,42 @@ test('combine form orders snapshots and preserves request ID after an uncertain 
   assert.deepEqual(busy, [true, false, true, false])
 })
 
+test('combine selection can refresh revisions without losing order', async () => {
+  const meetings = [1,2].map(i => ({ id: `part${i}`, title: `Part ${i}`, date: '2026-11-05T16:00:00-07:00', timezone: 'America/Denver', revision: 0, active: `tr${i}`, state: 'completed' }))
+  const calls=[]
+  const rest=async (path,opts={}) => {
+    calls.push({path,...opts})
+    if (path==='/meetings') return meetings.map(m=>({...m,revision:3}))
+    return {id:'combined'}
+  }
+  render(React.createElement(plugin.CombineForm,{meetings,rest,onCreated:()=>{},onBusy:()=>{}}))
+  const picker=screen.getByLabelText('Add recording in playback order')
+  fireEvent.change(picker,{target:{value:'part2'}})
+  fireEvent.change(picker,{target:{value:'part1'}})
+  fireEvent.click(screen.getByRole('button',{name:'Refresh selected transcripts'}))
+  await screen.findByText('Part 2 · revision 3')
+  fireEvent.click(screen.getByRole('button',{name:'Create combined meeting'}))
+  await waitFor(()=>assert.equal(calls.length,2))
+  assert.deepEqual(calls[1].body.sources,[{id:'part2',active:'tr2',revision:3},{id:'part1',active:'tr1',revision:3}])
+})
+
+test('copy and open retains copied request when profile routing is unavailable', async () => {
+  const original=Object.getOwnPropertyDescriptor(globalThis,'navigator')
+  const copied=[]
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>copied.push(text)}}})
+  try {
+    render(React.createElement(plugin.RequestBox,{meeting:{id:'m1',owner_profile:'default',analysis_profile:'research'},hasNotes:false,
+      hostApi:{profileRoutes:async()=>[],newChat:()=>assert.fail('Unavailable route must not open a chat')}}))
+    fireEvent.click(screen.getByRole('button',{name:'Copy request and open profile'}))
+    await screen.findByText(/Request copied\. The selected profile is not uniquely reachable/)
+    assert.equal(copied.length,1)
+    assert.match(copied[0],/source_profile="default"/)
+  } finally {
+    if(original) Object.defineProperty(globalThis,'navigator',original)
+    else delete globalThis.navigator
+  }
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }

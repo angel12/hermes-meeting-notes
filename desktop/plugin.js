@@ -398,6 +398,19 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
     ;[copy[i], copy[i + direction]] = [copy[i + direction], copy[i]]
     setSources(copy)
   }
+  const refreshSources = async () => {
+    setBusy(true); onBusy(true); setError('')
+    try {
+      const current = await rest('/meetings')
+      const refreshed = sources.map(source => {
+        const m = current.find(m => m.id === source.id && m.state === 'completed' && m.active && !m.combined)
+        if (!m) throw new Error(`Recording ${source.title} is no longer ready. Remove it from the selection.`)
+        return m
+      })
+      setSources(refreshed)
+    } catch (e) { setError(errorText(e)) }
+    finally { setBusy(false); onBusy(false) }
+  }
   const submit = async event => {
     event.preventDefault()
     if (busy) return
@@ -428,6 +441,7 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
       h('option', { value: '' }, 'Choose a completed recording…'),
       ...available.map(m => h('option', { key: m.id, value: m.id }, `${m.title} · ${formatMeetingDate(m.date, m.timezone)}`)))),
     !available.length && !sources.length && h('p', { className: 'mn-faint' }, 'Import and transcribe at least two recordings first.'),
+    sources.length > 0 && btn({ disabled: busy, onClick: refreshSources }, 'Refresh selected transcripts'),
     h('ol', { 'aria-label': 'Recording order' }, ...sources.map((m, i) => h('li', { key: m.id },
       h('span', null, `${m.title} · revision ${m.revision} `),
       btn({ size: 'xs', disabled: busy || i === 0, onClick: () => move(i, -1), 'aria-label': `Move recording ${i + 1} up` }, '↑'),
@@ -800,21 +814,23 @@ export function AnalysisProfile({ meeting, rest, act, busy }) {
     missing && h(Callout, { tone: 'warn', role: 'status' }, 'The saved profile is unavailable. Select an existing profile; analysis will not silently use another one.'))
 }
 
-function RequestBox({ meeting, hasNotes }) {
+export function RequestBox({ meeting, hasNotes, hostApi = host }) {
   const text = notesRequest(meeting)
   const ref = useRef(null)
   const [copied, setCopied] = useState('')
   const [opening, setOpening] = useState(false)
-  const connection = useRef(host?.state?.connectionId?.get?.() ?? null)
+  const connection = useRef(hostApi?.state?.connectionId?.get?.() ?? null)
   const openProfile = async () => {
     setOpening(true)
+    let copiedRequest = false
     try {
-      const route = await analysisChatRoute(host, meeting.analysis_profile || meeting.owner_profile, connection.current)
       if (!globalThis.navigator?.clipboard?.writeText) throw new Error('Copy the request below, then open a Hermes chat in the selected profile.')
       await globalThis.navigator.clipboard.writeText(text)
-      host.newChat(route)
+      copiedRequest = true
+      const route = await analysisChatRoute(hostApi, meeting.analysis_profile || meeting.owner_profile, connection.current)
+      hostApi.newChat(route)
       setCopied('Request copied. Paste it into the new profile chat. Notes save back to the importing profile.')
-    } catch (e) { setCopied(errorText(e)) }
+    } catch (e) { setCopied(`${copiedRequest ? 'Request copied. ' : ''}${errorText(e)}`) }
     finally { setOpening(false) }
   }
   const copy = async () => {
@@ -904,7 +920,7 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
     analysis && h(Fragment, null,
       historical && h(Callout, { tone: 'info', title: 'Viewing an earlier version' }, h('p', null, 'This is a saved version from history. It is kept unchanged for review.')),
       analysis.needs_review && h(Callout, { tone: 'warn', title: 'Notes may be out of date', role: 'status' },
-        h('p', null, historical ? 'The transcript has changed since this version was generated.' : 'The transcript was corrected after these notes were generated. Review them or regenerate with the request above. Owners based on who spoke already reflect your speaker corrections; owners named in the text do not change.')),
+        h('p', null, historical ? 'The transcript or analysis profile has changed since this version was generated.' : 'The transcript or analysis profile changed after these notes were generated. Review them or regenerate with the request above. Owners based on who spoke already reflect your speaker corrections; owners named in the text do not change.')),
       analysis.unmatched_previous_items?.length > 0 && h(Callout, { tone: 'info' },
         h('p', null, `${analysis.unmatched_previous_items.length} ${analysis.unmatched_previous_items.length === 1 ? 'item' : 'items'} from the previous version did not carry over exactly. Choose an earlier version above to review them.`)),
       h('p', { className: 'mn-faint' }, `Generated ${relative(analysis.created)} from revision ${analysis.revision}${analysis.transcript !== meeting.active ? ' of an earlier transcript' : ''}${analysis.profile ? ` · profile ${analysis.profile}` : ''}${analysis.model ? ` · ${analysis.model}` : ''}. Quotes are checked word for word against the transcript; the interpretation still needs your review.`),

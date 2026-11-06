@@ -166,3 +166,17 @@ def test_concurrent_profile_contexts_never_share_the_first_actor(homes):
     with ThreadPoolExecutor(2) as pool:
         results=list(pool.map(read,['research','other']))
     assert results==['research','This meeting is not assigned to the current Hermes profile']
+
+
+def test_local_import_survives_unknown_catalog_identity_but_sharing_stays_closed(homes,monkeypatch):
+    from meeting_notes import runtime
+    svc,mid,dirs,current,bound,multiplex=homes
+    current.set(dirs['default']/'uncataloged-home')
+    module=ModuleType('plugins.plugin_storage'); module.plugin_data_dir=lambda _:svc.root
+    monkeypatch.setitem(sys.modules,'plugins.plugin_storage',module)
+    local=runtime.service()
+    assert local.owner_profile is None
+    assert local.get(mid)['id']==mid
+    assert imported(local)==mid
+    with pytest.raises(ValueError,match='unambiguously'): profiles.select(local,mid,'research',0)
+    with pytest.raises(ValueError,match='unambiguously'): profiles.analysis_service(mid,'default')

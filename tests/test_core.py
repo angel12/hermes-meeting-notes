@@ -44,6 +44,29 @@ class Adapter:
         return 200,json.dumps(raw()).encode()
 
 
+def test_worker_loop_recovers_database_lock_without_requeueing(svc,monkeypatch,caplog):
+    import sqlite3
+    from meeting_notes import runtime
+    mid=imported(svc)
+    with svc.db() as db:
+        db.execute("UPDATE jobs SET state='interrupted_unknown' WHERE meeting=?",(mid,))
+    class StopLoop(BaseException): pass
+    class FlakyWorker:
+        calls=0
+        def run_once(self):
+            self.calls+=1
+            if self.calls==1: raise sqlite3.OperationalError('private diagnostic must not be logged')
+            assert not Worker(svc,lambda _:pytest.fail('Unknown outcome was resubmitted')).run_once()
+            raise StopLoop()
+    waits=[]
+    monkeypatch.setattr(runtime.time,'sleep',waits.append)
+    worker=FlakyWorker()
+    with pytest.raises(StopLoop): runtime.work_loop(worker)
+    assert worker.calls==2 and waits==[5]
+    assert svc.get(mid)['job']['state']=='interrupted_unknown'
+    assert 'private diagnostic' not in caplog.text
+
+
 def test_upload_and_finalize_idempotent(svc):
     assert imported(svc)==imported(svc)
     assert len(svc.list())==1
