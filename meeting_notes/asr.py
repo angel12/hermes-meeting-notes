@@ -56,7 +56,9 @@ def canonical_response(raw, adapter):
         return raw
     if adapter != 'xai_oauth':
         raise ValueError('Unsupported transcription adapter')
-    words = raw.get('words')
+    # A live synthetic silence request returned text="" with no words field.
+    # Treat it as no recognized speech, not proof of silence or diarization.
+    words = raw.get('words', [] if raw.get('text') == '' else None)
     if not isinstance(words,list) or any(not isinstance(w,dict) or type(w.get('speaker')) is not int for w in words):
         raise ValueError('xAI must return timestamped words with integer speaker labels')
     return {**raw,'words':[{**w,'word':w.get('text')} for w in words]}

@@ -63,6 +63,13 @@ def test_timestamps_and_text_are_validated():
         with pytest.raises(ValueError): parse_part(json.dumps(data).encode(),'t',1,False,'xai_oauth')
 
 
+def test_empty_xai_response_can_omit_words_but_nonempty_speech_cannot():
+    raw_bytes=b'{"text":"","language":"","duration":2.0}'
+    assert parse_part(raw_bytes,'t',2,False,'xai_oauth')==[]
+    with pytest.raises(ValueError):
+        parse_part(b'{"text":"Missing speaker evidence","duration":2.0}','t',2,False,'xai_oauth')
+
+
 def test_interrupted_chunk_explicit_retry_reuses_completed_response(tmp_path,broker):
     svc=setup(tmp_path); mid,_,_=upload(svc,32000); calls=[]
     response=json.dumps(raw()).encode()
