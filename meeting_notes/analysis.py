@@ -47,8 +47,13 @@ class NotesValidationError(ValueError):
         super().__init__(f"Notes validation failed at {first['path']} ({first['code']}); nothing was saved")
 
     def as_dict(self):
-        return {'error': str(self), 'failures': self.failures,
-                'more_failures': self.more_failures}
+        result = {'error': str(self), 'failures': self.failures,
+                  'more_failures': self.more_failures}
+        if any(f['code'] == 'unknown_source' for f in self.failures):
+            result['hint'] = ('Copy segment IDs exactly from meeting_transcript for the current basis (e.g. s0, s163). '
+                              'Do not pad numbers, use stored transcript-qualified IDs, or substitute original-recording IDs. '
+                              'Re-read transcript pages to recover IDs; do not inspect files or guess conversions.')
+        return result
 
 
 def check_schema(payload):

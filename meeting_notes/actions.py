@@ -32,7 +32,7 @@ def fingerprint(item):
     return hashlib.sha256(json.dumps({k: v for k, v in item.items() if k != 'id'}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def view(svc, meeting):
+def view(svc, meeting, *, short_source_ids=False):
     with svc.db() as db:
         db.execute('BEGIN')
         # get uses a separate read connection; final mutations always fence both versions.
@@ -52,10 +52,29 @@ def view(svc, meeting):
         row['result'] = json.loads(row['result']) if row['result'] else None
         row['history'] = json.loads(row['history'])
         row['needs_review'] = (row['revision'] != snapshot['revision'] or row['transcript'] != snapshot['active'] or row['action_id'] not in ids)
-    return {'meeting_id': meeting, 'basis': basis_for(snapshot), 'actions_id': record['id'] if record else None,
+    result = {'meeting_id': meeting, 'basis': basis_for(snapshot), 'actions_id': record['id'] if record else None,
             'items': items, 'sources': record['sources'] if record else {},
             'needs_review': projected['needs_review'] if projected else False,
             'handoffs': rows}
+    if short_source_ids:
+        # Only the agent-facing read uses transcript aliases. UI playback, persisted
+        # lineage and frozen handoff receipts retain their canonical source IDs.
+        result = copy.deepcopy(result)
+        current = not record or record['transcript'] == snapshot['active']
+        result['source_id_format'] = ('Current proposal references use the exact unpadded IDs from meeting_transcript, e.g. s0, s163. '
+                                      'Handoffs are frozen history, not save input.' if current else
+                                      'These proposals belong to an older transcript. Their IDs are historical, not valid save input. '
+                                      'Read meeting_transcript and rebuild proposals using its exact IDs.')
+        result['sources_match_current_transcript'] = current
+        if current:
+            aliases = {s['id']: f's{n}' for n, s in enumerate(snapshot['segments'])}
+            for item in result['items']:
+                for ref in [*item['citations'], item['owner'], item['due']]:
+                    if ref['segment_id'] is not None:
+                        ref['segment_id'] = aliases[ref['segment_id']]
+            result['sources'] = {aliases[sid]: {**source, 'id': aliases[sid]}
+                                 for sid, source in result['sources'].items()}
+    return result
 
 
 def save(svc, meeting, basis, actions_id, items):

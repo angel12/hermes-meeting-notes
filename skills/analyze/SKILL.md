@@ -1,7 +1,7 @@
 ---
 name: analyze
 description: Generate sourced meeting notes, decisions, questions, and commitments from an imported Meeting Notes transcript in the current Hermes session, then validate and save them to the plugin.
-version: 0.1.2
+version: 0.1.3
 ---
 
 # Meeting notes
@@ -38,7 +38,7 @@ Each item has these fields (all are required):
 
 - `kind`: `summary`, `decision`, `question`, `commitment`, or `suggestion`.
 - `text`: your concise statement of the finding.
-- `citations`: one or more `{ "segment_id": "s0", "quote": "exact text" }` objects. Use the short IDs from the transcript; quote verbatim, including capitalization and punctuation. Use each source ID at most once per item.
+- `citations`: one or more `{ "segment_id": "s0", "quote": "exact text" }` objects. Copy the exact unpadded IDs from transcript rows (e.g. `s0`, `s163`), never stored transcript-qualified IDs or `s00163`; quote verbatim, including capitalization and punctuation. Use each source ID at most once per item.
 - `owner`: `{ "basis": "unresolved", "segment_id": null, "name": null }` unless a commitment has an explicit owner.
 - `due`: `{ "segment_id": null, "quote": null, "proposed_date": null }` unless a commitment has a stated date.
 

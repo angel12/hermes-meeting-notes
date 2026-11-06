@@ -256,7 +256,17 @@ def test_registered_action_tools_complete_a_synthetic_round_trip(homes):
     page = call('meeting_transcript')
     saved = call('meeting_save_actions', basis=state['basis'], actions_id=None, items=[item(page, action_type='training')])
     assert saved['status'] == 'saved'
-    assert call('meeting_actions')['items'][0]['action_type'] == 'training'
+    reread = call('meeting_actions')
+    assert reread['items'][0]['action_type'] == 'training'
+    assert reread['items'][0]['citations'][0]['segment_id'] == page['segments'][0][0]
+    assert reread['sources']['s0']['id'] == 's0'
+    assert reread['items'][0]['owner']['segment_id'] == 's0'
+    # An agent can reuse the read's evidence without guessing or parsing stored IDs.
+    revised = item(page, action_type='training')
+    revised['citations'] = [{k: c[k] for k in ('segment_id', 'quote')} for c in reread['items'][0]['citations']]
+    revised['owner'] = reread['items'][0]['owner']
+    assert call('meeting_save_actions', basis=reread['basis'], actions_id=reread['actions_id'], items=[revised])['status'] == 'saved'
+    assert call('meeting_actions')['items'][0]['id'] == reread['items'][0]['id']
     hid, _ = prepare(svc, mid)
     read = call('meeting_action_callback', handoff_id=hid, operation='read')
     assert read['state'] == 'pending' and not read['may_execute']
@@ -264,6 +274,57 @@ def test_registered_action_tools_complete_a_synthetic_round_trip(homes):
     assert begin['may_execute']
     assert call('meeting_action_callback', handoff_id=hid, operation='report', version=begin['version'], result=report())['status'] == 'completed'
     assert call('meeting_actions')['handoffs'][0]['result']['external_id'] == 'test-item-1'
+
+
+def test_agent_source_aliases_preserve_storage_and_frozen_handoffs(proposal):
+    svc, mid = proposal
+    hid, _ = prepare(svc, mid)
+    before = actions.view(svc, mid)
+    wire = actions.view(svc, mid, short_source_ids=True)
+    assert wire['sources_match_current_transcript'] is True
+    assert wire['items'][0]['citations'][0]['segment_id'] == 's0'
+    assert wire['handoffs'] == before['handoffs']
+    assert wire['handoffs'][0]['id'] == hid
+    assert actions.view(svc, mid) == before
+    svc.correct(mid, 'text', svc.get(mid)['segments'][0]['id'], 'Changed evidence.', 0)
+    wire = actions.view(svc, mid, short_source_ids=True)
+    assert wire['needs_review'] and wire['items'][0]['citations'][0]['source_changed']
+    assert wire['items'][0]['citations'][0]['segment_id'] == 's0'
+
+
+def test_agent_never_relabels_historical_transcript_sources(proposal):
+    import json
+    svc, mid = proposal
+    before = actions.view(svc, mid)
+    with svc.db() as db:
+        row = db.execute('SELECT * FROM transcripts WHERE id=?', (before['basis']['transcript_id'],)).fetchone()
+        segments = json.loads(row['segments'])
+        for n, segment in enumerate(segments):
+            segment['id'] = f'new:s{n:05d}'
+        db.execute('INSERT INTO transcripts VALUES(?,?,?,?,?)', ('new', mid, row['raw'], row['sha'], json.dumps(segments)))
+        db.execute('UPDATE meetings SET active=? WHERE id=?', ('new', mid))
+    wire = actions.view(svc, mid, short_source_ids=True)
+    assert wire['sources_match_current_transcript'] is False
+    assert 'older transcript' in wire['source_id_format']
+    assert wire['needs_review']
+    assert wire['sources'] == before['sources']
+    assert wire['items'][0]['citations'] == before['items'][0]['citations']
+
+
+@pytest.mark.parametrize('invalid_id', ['s00000', 'private-transcript:s00000', 'source-recording:s00000'])
+def test_unknown_action_source_explains_recovery_without_echoing_input(proposal, invalid_id):
+    import json
+    svc, mid = proposal
+    page = read_transcript(svc, mid)
+    before = actions.view(svc, mid)
+    bad = item(page)
+    bad['citations'][0]['segment_id'] = invalid_id
+    with pytest.raises(NotesValidationError) as exc:
+        actions.save(svc, mid, page['basis'], before['actions_id'], [bad])
+    error = exc.value.as_dict()
+    assert 'meeting_transcript' in error['hint'] and 's163' in error['hint']
+    assert invalid_id not in json.dumps(error)
+    assert actions.view(svc, mid) == before
 
 
 def test_second_chat_cannot_erase_an_in_progress_external_receipt(proposal):
