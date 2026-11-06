@@ -1,0 +1,22 @@
+name: meeting_notes
+version: "0.1.0"
+description: "Import meeting audio, correct diarized speakers, and generate sourced notes and commitments. Early implementation."
+author: "Hermes Meeting Notes contributors"
+requires_hermes: ">=0.22.6"
+provides_tools:
+  - meeting_transcript
+  - meeting_save_notes
+  - meeting_list
+  - meeting_get
+  - meeting_correct
+  - meeting_retry_transcription
+python_dependencies:
+  - "jsonschema>=4.23,<5"
+  - "httpx>=0.27,<1"
+  - "fastapi>=0.115,<1"
+  - "python-multipart>=0.0.18,<1"
+requires_env:
+  - name: MEETING_NOTES_ASR_KEY
+    description: "NeMo-Speech.cpp bearer key; set via Hermes secret configuration."
+    secret: true
+    required: false

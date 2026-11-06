@@ -1,0 +1,22 @@
+name: hermes-meeting-notes-test
+services:
+  webapp:
+    image: hermes-meeting-notes-test:idle-compat-v1
+    build:
+      context: .
+      args:
+        HERMES_BASE_IMAGE: ${HERMES_TEST_IMAGE:?Set a verified image digest in .env}
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    ports:
+      - "127.0.0.1:19120:9120"
+    environment:
+      HERMES_UID: "1000"
+      HERMES_GID: "1000"
+      HERMES_DASHBOARD: "0"
+    env_file:
+      - path: ./secrets/runtime.env
+        format: raw
+    volumes:
+      - ./data:/opt/data
+    stop_grace_period: 30s

@@ -1,0 +1,16 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+*.wav
+*.WAV
+*.sqlite*
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+secrets/
+*.log
+.DS_Store
