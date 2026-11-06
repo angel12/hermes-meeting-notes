@@ -613,6 +613,66 @@ export function RecordingStorage({ meeting, rest }) {
     error && h(Callout, { tone: 'error', role: 'alert' }, error))
 }
 
+export function DeletionCleanup({ rest }) {
+  const [status, setStatus] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { rest('/deletions').then(setStatus).catch(e => setError(errorText(e))) }, [rest])
+  const retry = async () => {
+    setBusy(true); setError('')
+    try { setStatus(await rest('/deletions/cleanup', { method: 'POST' })) }
+    catch (e) { setError(errorText(e)) }
+    finally { setBusy(false) }
+  }
+  return h('section', { className: 'mn-card', 'aria-label': 'Deleted recording cleanup' },
+    h('h3', null, 'Deleted recording cleanup'),
+    h('p', null, status ? `${status.pending_files} managed files awaiting removal.` : 'Checking file cleanup…'),
+    status?.pending_files > 0 && h('p', { className: 'mn-muted' }, 'Reconnect the original storage location and retry. Files that changed or are outside this profile’s storage are kept.'),
+    btn({ disabled: busy, onClick: retry }, 'Retry file cleanup'),
+    error && h(Callout, { tone: 'error', role: 'alert' }, error))
+}
+
+export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, disabled = false }) {
+  const [review, setReview] = useState(null)
+  const [title, setTitle] = useState('')
+  const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const load = async () => {
+    setBusy(true); onBusy(true); setError(''); setConfirmed(false); setTitle('')
+    try { setReview(await rest(`/meetings/${meeting.id}/deletion`)) }
+    catch (e) { setError(errorText(e)) }
+    finally { setBusy(false); onBusy(false) }
+  }
+  const remove = async e => {
+    e.preventDefault()
+    if (!review || title !== review.title || !confirmed || review.blockers.length) return
+    setBusy(true); onBusy(true); setError('')
+    try {
+      const result = await rest(`/meetings/${meeting.id}/delete`, { method: 'POST', body: { token: review.token, confirm: true } })
+      onDeleted(result)
+    } catch (e) { setError(errorText(e)) }
+    finally { setBusy(false); onBusy(false) }
+  }
+  return h('section', { 'aria-label': 'Delete meeting' },
+    !review && btn({ variant: 'ghost', disabled: disabled || busy, onClick: load }, 'Delete meeting…'),
+    review && h('form', { className: 'mn-card', 'aria-label': 'Confirm meeting deletion', onSubmit: remove },
+      h('h3', null, `Delete “${review.title}”?`),
+      h('p', null, 'Permanently remove this meeting’s transcripts, corrections, notes, action proposals and local handoff receipts. This cannot be undone.'),
+      h('p', null, review.combined ? 'Its source recordings and their meetings are kept.' : 'Its managed recording, playback and raw transcription files will also be removed.'),
+      h('p', null, 'The original file on your recorder/computer, Hermes chat history, backups and external calendar events or tasks are not deleted.'),
+      ...review.blockers.map((text, i) => h(Callout, { key: i, tone: 'warn' }, text)),
+      review.dependencies.length > 0 && h('ul', null, ...review.dependencies.map(d => h('li', { key: d.id }, d.title))),
+      h('p', { className: 'mn-faint' }, `${review.counts.analyses} saved notes versions · ${review.counts.action_sets} action sets · ${review.counts.action_handoffs} handoff receipts`),
+      h(Field, { label: 'Type the meeting title to confirm' }, h('input', { className: 'mn-input', value: title, disabled: busy, onChange: e => setTitle(e.target.value) })),
+      h('label', null, h('input', { type: 'checkbox', checked: confirmed, disabled: busy, onChange: e => setConfirmed(e.target.checked) }), ' I understand this permanently deletes local meeting data.'),
+      h('div', { className: 'mn-actions' },
+        btn({ type: 'submit', disabled: busy || disabled || !confirmed || title !== review.title || review.blockers.length > 0 }, 'Permanently delete meeting'),
+        btn({ variant: 'ghost', disabled: busy, onClick: load }, 'Refresh deletion review'),
+        btn({ variant: 'ghost', disabled: busy, onClick: () => { setReview(null); setError('') } }, 'Keep meeting'))),
+    error && h(Callout, { tone: 'error', role: 'alert' }, error))
+}
+
 export function SettingsForm({ rest }) {
   const [settings, setSettings] = useState(null)
   const [error, setError] = useState('')
@@ -633,6 +693,7 @@ export function SettingsForm({ rest }) {
     h('header', { className: 'mn-header' },
       h('h2', null, 'Transcription settings'),
       h('p', { className: 'mn-muted' }, 'A NeMo-Speech.cpp server with speaker diarization and word timestamps. These settings apply to every meeting on this host.')),
+    h(DeletionCleanup, { rest }),
     !settings && !error && h('div', { className: 'mn-card', 'aria-busy': true }, h('p', { className: 'mn-faint' }, 'Loading settings…')),
     settings && h('form', { className: 'mn-card', onSubmit: save, 'aria-label': 'Transcription settings' },
       h(Field, { label: 'Server endpoint', hint: 'HTTP(S) base URL, without credentials. Use plain HTTP only on a trusted network.' },
@@ -1191,7 +1252,7 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
       ...data.handoffs.filter(h => !data.items.some(i => i.id === h.action_id)).map(handoff => h('article', { key: handoff.id }, h('p', null, handoff.snapshot.item.text), handoffCard(handoff)))))
 }
 
-function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab }) {
+function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab, onDeleted, onDeleteBusy }) {
   const participants = useMemo(() => participantsOf(meeting.segments, meeting.corrections), [meeting.segments, meeting.corrections])
   const [focusId, setFocusId] = useState(null)
   const duration = meeting.segments.length ? Math.max(...meeting.segments.map(s => s.end || 0)) : 0
@@ -1216,6 +1277,7 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
         ready && h('span', null, `${meeting.segments.length} turns`),
         ready && analysis && h('span', null, `${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${analysis.needs_review ? ' · needs review' : ''}`))),
     notice && h(Callout, { tone: notice.tone || 'ok', role: 'status' }, h('p', null, notice.text)),
+    h(DeleteMeeting, { meeting, rest, disabled: busy, onBusy: onDeleteBusy, onDeleted }),
     h(AnalysisProfile, { meeting, rest, act, busy }),
     meeting.transcription_chunks?.some(c => c.recognized_segments === 0) && meeting.segments.length > 0 &&
       h(Callout, { tone: 'warn', title: 'Some audio has no recognized words', role: 'status' }, 'At least one chunk returned no words. Review its audio before relying on these notes; this does not prove silence.'),
@@ -1300,7 +1362,9 @@ export function Meetings({ ctx }) {
     if (inflight.current) return
     inflight.current = true
     try {
-      setMeetings(await rest('/meetings'))
+      const seq = mutation.current
+      const listed = await rest('/meetings')
+      if (seq === mutation.current) setMeetings(listed)
       setLoaded(true)
       await loadSelected()
       setPollError('')
@@ -1388,6 +1452,12 @@ export function Meetings({ ctx }) {
     }
   }
 
+  const deleted = result => {
+    mutation.current++; closePlayer(); selectedId.current = null; lastSelected = null; setSelected(null)
+    setView('home'); setActionError(''); setPollError(''); setMeetings(rows => rows.filter(m => m.id !== selected?.id))
+    setNotice({ tone: result.pending_files ? 'warn' : 'ok', text: result.pending_files ? 'Meeting deleted. Some managed files await cleanup; reconnect storage and use Retry file cleanup in settings.' : 'Meeting and its managed files deleted.' })
+  }
+
   const page = view === 'upload'
     ? h(UploadForm, { rest, onBusy: setUploading, onUploaded: async id => {
       const existing = meetings.some(m => m.id === id)
@@ -1401,7 +1471,7 @@ export function Meetings({ ctx }) {
       refresh()
     } })
     : view === 'settings' ? h(SettingsForm, { rest })
-      : view === 'meeting' && selected ? h(MeetingView, { key: selected.id, meeting: selected, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab })
+      : view === 'meeting' && selected ? h(MeetingView, { key: selected.id, meeting: selected, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab, onDeleted: deleted, onDeleteBusy: setBusy })
         : view === 'meeting' ? h('div', { className: 'mn-page', 'aria-busy': true }, h('div', { className: 'mn-skel', style: { width: '40%', height: 20 } }), h('div', { className: 'mn-skel', style: { width: '70%' } }), h('p', { className: 'mn-faint' }, 'Loading meeting…'))
           : h(Welcome, { onNew: () => setView('upload'), hasMeetings: meetings.length > 0 })
 
@@ -1414,6 +1484,7 @@ export function Meetings({ ctx }) {
       (actionError || pollError) && h('div', { style: { padding: '12px 28px 0', maxWidth: 1180, margin: '0 auto' } },
         actionError && h(Callout, { tone: 'error', role: 'alert' }, h('div', { className: 'mn-spread' }, h('span', null, actionError), btn({ size: 'xs', variant: 'ghost', onClick: () => setActionError('') }, 'Dismiss'))),
         !actionError && pollError && h(Callout, { tone: 'warn', role: 'status' }, h('p', null, `Could not refresh: ${pollError}. Retrying every few seconds.`))),
+      view === 'home' && notice && h(Callout, { tone: notice.tone, role: 'status' }, notice.text),
       page))
 }
 

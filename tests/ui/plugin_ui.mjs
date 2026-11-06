@@ -697,6 +697,50 @@ test('action handoff session fills its own request and keeps its selected profil
   assert.doesNotMatch(request,/meeting_notes:analyze/)
 })
 
+test('meeting deletion requires reviewed title and acknowledgement and preserves token on failure', async () => {
+  const writes=[], results=[]
+  let fail=true
+  const review={id:'m1',title:'Synthetic meeting',token:'review-token',combined:false,counts:{analyses:2,action_sets:1,action_handoffs:1},dependencies:[],blockers:[]}
+  const rest=async(path,opts={})=>{
+    if(!opts.method) return review
+    writes.push({path,...opts})
+    if(fail) throw new Error('Meeting changed; review deletion again')
+    return {deleted:true,pending_files:0}
+  }
+  render(React.createElement(plugin.DeleteMeeting,{meeting:{id:'m1'},rest,onDeleted:r=>results.push(r)}))
+  fireEvent.click(screen.getByRole('button',{name:'Delete meeting…'}))
+  const title=await screen.findByLabelText('Type the meeting title to confirm')
+  assert.equal(writes.length,0)
+  const submit=screen.getByRole('button',{name:'Permanently delete meeting'})
+  assert.equal(submit.disabled,true)
+  fireEvent.change(title,{target:{value:'Synthetic meeting'}})
+  assert.equal(submit.disabled,true)
+  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(submit)
+  await screen.findByRole('alert')
+  assert.equal(results.length,0)
+  assert.deepEqual(writes[0].body,{token:'review-token',confirm:true})
+  fail=false
+  fireEvent.click(submit)
+  await waitFor(()=>assert.equal(results.length,1))
+  assert.deepEqual(writes[1].body,writes[0].body)
+})
+
+test('meeting deletion lists combined dependencies and never submits when blocked', async () => {
+  const rest=async(path,opts)=>{
+    assert.equal(opts,undefined)
+    return {title:'Source',token:'t',combined:false,counts:{analyses:0,action_sets:0,action_handoffs:0},dependencies:[{id:'combined',title:'Combined meeting'}],blockers:['Delete the combined meetings first.']}
+  }
+  render(React.createElement(plugin.DeleteMeeting,{meeting:{id:'source'},rest,onDeleted:()=>assert.fail('Deleted blocked source')}))
+  fireEvent.click(screen.getByRole('button',{name:'Delete meeting…'}))
+  await screen.findByText('Combined meeting')
+  fireEvent.change(screen.getByLabelText('Type the meeting title to confirm'),{target:{value:'Source'}})
+  fireEvent.click(screen.getByRole('checkbox'))
+  assert.equal(screen.getByRole('button',{name:'Permanently delete meeting'}).disabled,true)
+  fireEvent.click(screen.getByRole('button',{name:'Keep meeting'}))
+  assert.equal(screen.queryByRole('form',{name:'Confirm meeting deletion'}),null)
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }

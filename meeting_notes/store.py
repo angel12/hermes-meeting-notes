@@ -96,6 +96,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS storage_devices(path TEXT PRIMARY KEY, device INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS storage_job_policy(job TEXT PRIMARY KEY REFERENCES storage_jobs(id), automatic INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS storage_consent(id INTEGER PRIMARY KEY, created REAL NOT NULL, settings TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS deletions(meeting TEXT PRIMARY KEY, token TEXT NOT NULL, root TEXT NOT NULL, files TEXT NOT NULL);
             ''')
             db.execute('INSERT OR IGNORE INTO storage_settings VALUES(1,?,?)', (uid(), '{}'))
             identity = db.execute('SELECT root FROM storage_identity WHERE id=1').fetchone()

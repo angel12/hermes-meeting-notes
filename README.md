@@ -6,6 +6,7 @@ Early implementation of an import → diarized transcript → corrected speakers
 
 ## Implemented
 
+- Reviewed meeting deletion with combined-recording dependency checks, durable managed-file cleanup and preserved external items.
 - Durable SQLite metadata, 8 MiB hashed multipart chunks, duplicate-chunk conflict detection and idempotent finalize.
 - Configurable NeMo-Speech.cpp endpoint/model/timeout. Only this adapter is supported.
 - Configurable host audio directory, explicit migration of existing recordings, lossless FLAC playback compression, and opt-in smaller Opus recording archives with verified replacement and durable recovery.
@@ -120,3 +121,11 @@ The new policy applies after future transcriptions finish. If it changes before 
 Storage work runs durably on the host and is serialized with transcription. It copies/encodes to new files, verifies original copies by hash, FLAC by decoded PCM hash and frame count, and Opus by full decode and duration. Only then does a fenced SQLite transaction switch the active file pointers. Old managed files are removed afterward; interrupted cleanup is retried without changing the authoritative audio. Extra free space for both old and replacement files is required until cleanup finishes. An interrupted conversion keeps the current recording and requires an explicit retry; browser close does not cancel it, but host shutdown can interrupt it. Use **Start queued work** after restart. No status request starts a conversion.
 
 Archive verification does not assess perceptual quality or validate transcript accuracy. The plugin never transcribes lossy archive audio during this operation and never changes existing transcripts, corrections, notes or citations. Stopped transcription jobs retain their original/prepared audio and cannot be archived until transcription completes. Back up the profile database and every configured audio directory together; copying only the database does not back up audio stored elsewhere.
+
+## Delete meetings and recordings
+
+Open a meeting and choose **Delete meeting…**. The review shows saved notes/action-set/receipt counts and any combined meetings that depend on it. Type its exact title and acknowledge permanent deletion. The importing profile UI removes the local meeting, transcripts, corrections, saved notes, action proposals, handoff receipts and its managed audio/raw-response files. There is no undo. Source files on your recorder/computer, Hermes chat history, backups and external calendar/tasks are not erased.
+
+A combined meeting can be deleted without deleting its source recordings. To delete a recording referenced by combined meetings, delete those combinations first. Running transcription/storage work and running or uncertain handoffs block deletion. Queued jobs are removed with the meeting; deletion never starts ASR or sends external requests. Changes since the review require a fresh confirmation.
+
+File cleanup is durable and checks profile ownership, references and file hashes. Unavailable/foreign storage or unsafe paths can prevent deletion before local data is removed. If cleanup is interrupted after removal, reconnect storage and use **Retry file cleanup** in settings; a running worker also retries pending cleanup. Changed files are kept rather than blindly removed. Reimporting the same audio does not let old cleanup remove its new copy. Deletion is not a secure erase of disks, backups or chat history.

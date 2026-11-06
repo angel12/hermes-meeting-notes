@@ -100,6 +100,32 @@ def meeting(ident: str):
     return call(lambda:runtime.service().get(ident))
 
 
+@router.get('/meetings/{ident}/deletion')
+def deletion_review(ident: str):
+    from meeting_notes import deletion
+    return call(lambda:deletion.review(runtime.service(), ident))
+
+
+@router.post('/meetings/{ident}/delete')
+def delete_meeting(ident: str, body: dict):
+    from meeting_notes import deletion
+    if set(body) != {'token', 'confirm'}:
+        raise HTTPException(400, 'Expected reviewed token and explicit confirmation')
+    return call(lambda:deletion.remove(runtime.service(), ident, **body))
+
+
+@router.get('/deletions')
+def deletion_status():
+    from meeting_notes import deletion
+    return call(lambda:deletion.status(runtime.service()))
+
+
+@router.post('/deletions/cleanup')
+def deletion_cleanup():
+    from meeting_notes import deletion
+    return call(lambda:deletion.cleanup(runtime.service()))
+
+
 @router.get('/meetings/{ident}/analyses/{analysis_id}')
 def analysis(ident: str, analysis_id: str):
     return call(lambda:runtime.service().get_analysis(ident,analysis_id))

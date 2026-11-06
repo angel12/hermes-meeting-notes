@@ -53,6 +53,8 @@ class Worker:
         return db.execute("SELECT 1 FROM jobs WHERE id=? AND owner=? AND generation=? AND attempt=? AND lease>=? AND state IN ('preparing','in_flight')",(job['id'],self.owner,job['generation'],job['attempt'],time.time())).fetchone()
 
     def run_once(self):
+        from . import deletion
+        deletion.cleanup(self.service)
         if storage.run_once(self.service):
             return True
         job = self.claim()
@@ -67,6 +69,7 @@ class Worker:
         heartbeat.start()
         sent, part_saved = False, False
         part_path = None
+        wav = None
         state, error = 'failed', 'Preparation failed; check ffmpeg, endpoint, model and Hermes ASR secret.'
         try:
             from pathlib import Path
@@ -106,8 +109,13 @@ class Worker:
             sent = True
             status, data = adapter.transcribe(request_audio)
             path = self.service.root/'raw'/f'{job["attempt"]}.json'
-            atomic_write(path,data)
             with self.service.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                # Deletion may follow lease recovery while the old HTTP call is
+                # still returning. Never resurrect its raw file after deletion.
+                if not db.execute('SELECT 1 FROM jobs WHERE id=?', (job['id'],)).fetchone():
+                    return True
+                atomic_write(path,data)
                 db.execute('UPDATE attempts SET raw=? WHERE id=?',(str(path),job['attempt']))
             state, error = 'invalid_response', 'Response saved but invalid; inspect adapter compatibility. No automatic resend.'
             if status != 200:
@@ -138,6 +146,13 @@ class Worker:
                 part_path.unlink(missing_ok=True)
             with self.service.db() as db:
                 db.execute('BEGIN IMMEDIATE')
+                if wav is not None and not db.execute('SELECT 1 FROM jobs WHERE id=?', (job['id'],)).fetchone():
+                    # Preparation can finish after a lost lease and deletion.
+                    # This meeting-specific derivative must not be resurrected.
+                    try:
+                        deletion._checked(self.service, wav).unlink(missing_ok=True)
+                    except (OSError, ValueError):
+                        pass
                 if self.fenced(db,job):
                     db.execute('UPDATE jobs SET state=?,error=?,lease=NULL WHERE id=?',(state,error,job['id']))
                     if not part_saved:
