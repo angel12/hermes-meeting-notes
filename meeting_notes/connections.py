@@ -16,7 +16,7 @@ def read(db):
     if legacy:
         custom.update(json.loads(legacy[0]))
     return dict(active='custom', revision=0, connections=dict(custom=custom, xai=dict(
-        endpoint=XAI_ENDPOINT, model='grok-voice-transcribe-2.0', timeout=600, max_audio_seconds=3600)))
+        endpoint=XAI_ENDPOINT, model='grok-voice-transcribe-2.0', timeout=600, max_audio_seconds=300)))
 
 
 def effective(state):

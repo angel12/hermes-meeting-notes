@@ -46,7 +46,7 @@ def host(tmp_path,monkeypatch):
     plugin.mkdir(parents=True)
     manifest=plugin/'plugin.yaml'; manifest.write_text('name: synthetic\nrequires_auth: [xai-oauth]\n')
     caller=plugin/'caller.py'
-    caller.write_text('def send(broker, url="https://api.x.ai/v1/stt", **kwargs):\n    return broker.credentialed_provider_request("xai-oauth", "POST", url, **kwargs)\n')
+    caller.write_text('def send(broker, url="https://api.x.ai/v1/stt", provider="xai-oauth", **kwargs):\n    return broker.credentialed_provider_request(provider, "POST", url, **kwargs)\n')
     caller=load(caller,'synthetic_plugin_caller')
     from tools import xai_http
     resolutions=[]
@@ -63,14 +63,15 @@ def host(tmp_path,monkeypatch):
         if response.get('error'): raise httpx.ReadTimeout('synthetic-token-profile-a',request=request)
         return httpx.Response(response['status'],headers=response['headers'],content=response['body'])
     def client(**kwargs):
-        assert kwargs['trust_env'] is False and kwargs['follow_redirects'] is False
+        assert kwargs['follow_redirects'] is False
+        response['trust_env']=kwargs['trust_env']
         return original(transport=httpx.MockTransport(handle),**kwargs)
     monkeypatch.setattr(httpx,'Client',client)
     return broker,caller,manifest,xai_http,resolutions,sent,response
 
 
 def test_real_admission_multipart_and_profile_resolution(host,monkeypatch,tmp_path):
-    broker,caller,_,_,resolutions,sent,_=host
+    broker,caller,_,_,resolutions,sent,transport=host
     assert broker.provider_request_capabilities()['multipart'] is True
     assert resolutions==[] and sent==[]  # no credential lookup for UI status
     for profile in ('profile-a','profile-b'):
@@ -84,6 +85,7 @@ def test_real_admission_multipart_and_profile_resolution(host,monkeypatch,tmp_pa
         assert response.body==b'{"text":"synthetic"}'
         assert 'synthetic-token' not in repr(response) and not hasattr(response,'request')
     assert resolutions==['profile-a','profile-b']
+    assert transport['trust_env'] is False
 
 
 def test_uninstalled_or_undeclared_call_fails_before_auth(host):
@@ -143,3 +145,39 @@ def test_json_requests_remain_supported_and_refresh_errors_are_sanitized(host,mo
     with pytest.raises(RuntimeError) as error: caller.send(broker)
     assert 'synthetic-refresh-secret' not in str(error.value) and len(sent)==1
     assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize('error',[ValueError('synthetic auth problem'),LookupError('synthetic lookup problem'),httpx.ReadTimeout('synthetic timeout')])
+def test_codex_auth_errors_and_proxy_behavior_are_unchanged(host,monkeypatch,error):
+    broker,caller,manifest,_,_,sent,response=host
+    manifest.write_text('name: synthetic\nrequires_auth: [openai-codex]\n')
+    def resolve(url): raise error
+    origins=frozenset({('https','api.openai.com',443)})
+    monkeypatch.setitem(broker._PROVIDERS,'openai-codex',(origins,resolve))
+    with pytest.raises(type(error)) as result:
+        caller.send(broker,provider='openai-codex',url='https://api.openai.com/v1/responses',json={'input':'synthetic'})
+    assert str(result.value)==str(error) and response['trust_env'] is True and not sent
+
+
+def test_codex_login_copy_headers_and_transport_type_are_preserved(host,monkeypatch):
+    broker,caller,manifest,_,_,sent,response=host
+    manifest.write_text('name: synthetic\nrequires_auth: [openai-codex]\n')
+    origins=frozenset({('https','api.openai.com',443)})
+    def not_signed_in(url): raise broker.ProviderNotSignedIn('Run hermes auth add openai-codex')
+    monkeypatch.setitem(broker._PROVIDERS,'openai-codex',(origins,not_signed_in))
+    with pytest.raises(broker.ProviderNotSignedIn,match='hermes auth add openai-codex'):
+        caller.send(broker,provider='openai-codex',url='https://api.openai.com/v1/responses')
+    monkeypatch.setitem(broker._PROVIDERS,'openai-codex',(origins,lambda url:({'Authorization':'Bearer synthetic-core-token'},'https://api.openai.com/v1')))
+    caller.send(broker,provider='openai-codex',url='https://api.openai.com/v1/responses',headers={'Authorization':'ignored-user-header'})
+    assert sent[-1][0].headers['Authorization']=='Bearer synthetic-core-token'
+    response['error']=True
+    with pytest.raises(httpx.ReadTimeout): caller.send(broker,provider='openai-codex',url='https://api.openai.com/v1/responses')
+
+
+def test_unexpected_xai_auth_exception_is_sanitized_before_submission(host,monkeypatch):
+    broker,caller,_,xai,_,sent,_=host
+    def broken(): raise AttributeError('synthetic-refresh-secret')
+    monkeypatch.setattr(xai,'resolve_xai_http_credentials',broken)
+    with pytest.raises(broker.ProviderRequestNotSent) as result: caller.send(broker)
+    assert 'synthetic-refresh-secret' not in str(result.value) and not sent
+    assert result.value.__context__ is None

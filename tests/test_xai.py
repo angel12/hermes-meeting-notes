@@ -22,6 +22,7 @@ def broker(monkeypatch):
     mod=ModuleType('hermes_cli.plugin_provider_requests')
     mod.provider_request_capabilities=lambda:dict(providers=['xai-oauth'],multipart=True)
     mod.ProviderNotSignedIn=type('ProviderNotSignedIn',(RuntimeError,),{})
+    mod.ProviderRequestNotSent=type('ProviderRequestNotSent',(RuntimeError,),{})
     monkeypatch.setitem(sys.modules,'hermes_cli',ModuleType('hermes_cli'))
     monkeypatch.setitem(sys.modules,mod.__name__,mod)
     return mod
@@ -104,6 +105,20 @@ def test_missing_sign_in_is_safe_setup_error(tmp_path,broker):
     result=svc.get(mid)
     assert result['job']['state']=='failed' and 'Sign in to xAI' in result['job']['error']
     assert 'secret-sentinel' not in json.dumps(result)
+    with svc.db() as db: assert db.execute('select sent from attempts').fetchone()[0] is None
+
+
+@pytest.mark.parametrize('error',['ProviderRequestNotSent','PermissionError'])
+def test_pre_submission_refusals_are_not_unknown(tmp_path,broker,error):
+    svc=setup(tmp_path); mid,_,_=upload(svc,16000)
+    exception=PermissionError if error=='PermissionError' else broker.ProviderRequestNotSent
+    def send(*args,**kwargs): raise exception('secret-sentinel')
+    broker.credentialed_provider_request=send
+    Worker(svc,lambda s:XaiOAuth(s,lambda:None)).run_once()
+    result=svc.get(mid)
+    assert result['job']['state']=='failed' and 'before sending' in result['job']['error']
+    assert 'secret-sentinel' not in json.dumps(result)
+    with svc.db() as db: assert db.execute('select sent from attempts').fetchone()[0] is None
 
 
 def test_missing_diarization_preserves_raw_without_publication(tmp_path,broker):

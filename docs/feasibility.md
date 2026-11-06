@@ -33,6 +33,8 @@ The xAI adapter calls only the public host credentialed-request module, never th
 
 Synthetic tests cover configuration preservation, stale revisions, active-work exclusion, worker profile checks, multipart requests, actual speaker/timestamp validation, immutable raw bytes, interrupted chunk recovery and host authorization boundaries. Tests apply the patch to a temporary copy of the pinned host module and use real core manifest/caller admission with fake credentials and HTTP transport. No real provider requests, real auth-store reads, or live OAuth acceptance have occurred. Opus review and test deployment are pending; stock-host xAI activation remains unavailable until the API extension exists there.
 
+Opus subsequently approved test deployment with no blockers (209 tests and 33 shared UI checks passed in review). Before deployment, the host patch was narrowed to preserve existing OpenAI exception/relogin/proxy behavior. Typed pre-submission errors now produce setup failures with no send timestamp, including unexpected xAI resolver failures. The UI treats numeric round-trip edits as unchanged. The default xAI chunk setting is five minutes for initial acceptance, without asserting a provider limit. The rollback/re-upgrade settings caveat is documented. Targeted follow-up host, adapter and UI checks passed; deployment and live subscription acceptance remain pending at this entry.
+
 **Current analysis path:** the bundled `meeting_notes:analyze` skill reads transcript pages into the normal Hermes session and saves the agent’s notes with `meeting_save_notes`. The nested `meeting_analyze`/`ctx.llm` implementation described in earlier chronological entries below has been removed.
 
 ## Verified in this implementation

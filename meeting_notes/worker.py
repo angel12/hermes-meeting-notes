@@ -142,6 +142,8 @@ class Worker:
         except SetupError as exc:
             # These fixed errors are raised only before any audio submission.
             state,error='failed',str(exc)
+            with self.service.db() as db:
+                db.execute('UPDATE attempts SET sent=NULL WHERE id=?',(job['attempt'],))
         except Exception:
             # Never expose HTTP exception strings (URLs, headers, provider response or transcripts).
             if sent and state == 'failed' and not part_saved:

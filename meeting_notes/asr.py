@@ -38,7 +38,7 @@ class XaiOAuth:
 
     def transcribe(self, path):
         self.probe()
-        from hermes_cli.plugin_provider_requests import credentialed_provider_request, ProviderNotSignedIn
+        from hermes_cli.plugin_provider_requests import credentialed_provider_request, ProviderNotSignedIn, ProviderRequestNotSent
         try:
             with path.open('rb') as audio:
                 response = credentialed_provider_request('xai-oauth', 'POST', XAI_ENDPOINT+'/stt',
@@ -47,6 +47,8 @@ class XaiOAuth:
             return response.status, response.body
         except ProviderNotSignedIn:
             raise SetupError('Sign in to xAI in the importing Hermes host profile, then Retry. No audio request was sent; API-key fallback is disabled.') from None
+        except (ProviderRequestNotSent, PermissionError):
+            raise SetupError('Hermes refused the xAI request before sending audio. Check the host sign-in, plugin declaration and provider endpoint before Retry.') from None
 
 
 def canonical_response(raw, adapter):

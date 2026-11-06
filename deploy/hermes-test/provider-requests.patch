@@ -8,7 +8,18 @@
  from typing import Any, Callable, Mapping, Optional
  
  from hermes_cli.urllib_security import url_origin
-@@ -65,9 +66,28 @@
+@@ -26,6 +27,10 @@
+ 
+ class ProviderNotSignedIn(RuntimeError):
+     """The user has no usable sign-in for the provider in this Hermes profile."""
++
++
++class ProviderRequestNotSent(RuntimeError):
++    """Core refused an xAI request before audio could be submitted."""
+ 
+ 
+ @dataclass(frozen=True)
+@@ -65,9 +70,28 @@
      return headers, str(creds.get("base_url") or "")
  
  
@@ -37,7 +48,7 @@
      "openai-codex": (frozenset({("https", "chatgpt.com", 443), ("https", "api.openai.com", 443)}), _codex_auth),
  }
  
-@@ -133,6 +153,7 @@
+@@ -133,6 +157,7 @@
  
  def credentialed_provider_request(
      provider: str, method: str, url: str, *, json: Any = None,
@@ -45,56 +56,69 @@
      headers: Optional[Mapping[str, str]] = None, timeout: float = 30.0,
  ) -> ProviderResponse:
      """Send ``method url`` with the user's *provider* sign-in attached by Hermes.
-@@ -145,6 +166,14 @@
+@@ -145,6 +170,14 @@
      returned as-is, never followed. The result carries no credential.
      """
      from hermes_cli.plugin_oauth import _plugin_oauth_spec
 +
 +    parsed = urlsplit(url)
-+    if parsed.username is not None or parsed.password is not None:
++    if provider == "xai-oauth" and (parsed.username is not None or parsed.password is not None):
 +        raise PermissionError("Provider URLs must not contain credentials")
 +    if json is not None and (data is not None or files is not None):
 +        raise ValueError("Choose JSON or multipart, not both")
-+    if any(name.lower() in {"authorization", "proxy-authorization", "host", "cookie"} for name in (headers or {})):
++    if provider == "xai-oauth" and any(name.lower() in {"authorization", "proxy-authorization", "host", "cookie"} for name in (headers or {})):
 +        raise PermissionError("Authentication and routing headers are host-owned")
  
      plugin_dir = _calling_plugin_dir()
      if plugin_dir is None:
-@@ -167,14 +196,16 @@
+@@ -167,14 +200,24 @@
      # Every error the plugin receives past this point is rebuilt without traceback, chain or request: those
      # reach the frames and httpx objects that hold the token, refresh token or client secret.
      refusal: Optional[BaseException] = None
 -    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
 -        request = client.build_request(method, url, json=json, headers=dict(headers or {}))  # no credential yet
-+    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
++    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=provider != "xai-oauth") as client:
 +        request = client.build_request(method, url, json=json, data=data, files=files, headers=dict(headers or {}))  # no credential yet
          try:
              auth_headers, credential_base = resolve(url)
-         except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token
+-        except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token
 -            refusal = type(exc)(str(exc))
--        except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
++        except httpx.HTTPError as exc:  # resolver refresh failed before the audio request
++            refusal = (ProviderRequestNotSent("Provider authentication failed. No audio request was sent.")
++                       if provider == "xai-oauth" else type(exc)(str(exc)))
+         except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
 -            refusal = _detached(exc)
-+            refusal = RuntimeError("Provider request failed; its outcome may be unknown. No automatic retry was made.")
-+        except ProviderNotSignedIn:
-+            refusal = ProviderNotSignedIn("Sign in to the requested provider in the owning Hermes profile. No audio request was sent.")
-+        except (RuntimeError, OSError, ValueError, LookupError, TypeError, ImportError):
-+            refusal = RuntimeError("Provider authentication could not be resolved. No audio request was sent.")
++            if provider != "xai-oauth":
++                refusal = _detached(exc)
++            elif isinstance(exc, ProviderNotSignedIn):
++                refusal = ProviderNotSignedIn("Sign in to xAI in the owning Hermes profile. No audio request was sent.")
++            else:
++                refusal = ProviderRequestNotSent("Provider authentication could not be resolved. No audio request was sent.")
++        except Exception:
++            if provider != "xai-oauth":
++                raise
++            refusal = ProviderRequestNotSent("Provider authentication could not be resolved. No audio request was sent.")
          else:
              if url_origin(credential_base) not in origins:
                  # A pooled gateway key belongs to its own host only (#121486).
-@@ -187,7 +218,7 @@
+@@ -187,7 +230,12 @@
                  try:
                      response = client.send(request)
                  except httpx.HTTPError as exc:
 -                    refusal = type(exc)(str(exc))
++                    refusal = (RuntimeError("Provider request failed; its outcome may be unknown. No automatic retry was made.")
++                               if provider == "xai-oauth" else type(exc)(str(exc)))
++                except Exception:
++                    if provider != "xai-oauth":
++                        raise
 +                    refusal = RuntimeError("Provider request failed; its outcome may be unknown. No automatic retry was made.")
              auth_headers = request = None
      if refusal is not None:
          raise refusal
-@@ -196,5 +227,5 @@
+@@ -196,5 +244,5 @@
  
  __all__ = [
      "ProviderNotSignedIn", "ProviderResponse", "credentialed_provider_request", "declared_auth_providers",
 -    "requires_auth_notice",
-+    "requires_auth_notice", "provider_request_capabilities",
++    "requires_auth_notice", "provider_request_capabilities", "ProviderRequestNotSent",
  ]

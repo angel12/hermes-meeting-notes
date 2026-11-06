@@ -702,7 +702,9 @@ export function SettingsForm({ rest }) {
     } catch (e) { setError(errorText(e)) } finally { setSaving(false) }
   }
   const set = key => e => { setSaved(''); setSettings({ ...settings, [key]: e.target.value }) }
-  const dirty = settings && JSON.stringify(settings) !== JSON.stringify(connections?.connections[editing])
+  const original = connections?.connections[editing]
+  const dirty = settings && (settings.endpoint.trim() !== original?.endpoint || settings.model.trim() !== original?.model ||
+    Number(settings.timeout) !== Number(original?.timeout) || Number(settings.max_audio_seconds ?? 3600) !== Number(original?.max_audio_seconds ?? 3600))
   return h('div', { className: 'mn-page' },
     h('header', { className: 'mn-header' },
       h('h2', null, 'Transcription settings'),
