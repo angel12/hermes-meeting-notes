@@ -24,6 +24,8 @@ When the meeting request supplies `source_profile`, pass it unchanged to **every
 
 For combined meetings, `recordings` describes the ordered source snapshots and their first source IDs. Speakers from separate recordings remain distinct even if their names match; do not infer identity across files. Playback times join the recordings back to back and do not establish real-world gaps or overlap. Use the combined meeting date/timezone for date interpretation; if source dates conflict or make a relative date ambiguous, leave it unresolved.
 
+Long recordings can also have `transcription_chunks`. Their times refer to the same full recording. Speaker IDs are intentionally distinct across chunks until the user merges them; do not infer identity from matching raw labels. A chunk with zero recognized segments means the model returned no words, not proven silence. Mention such gaps in the analysis coverage and do not claim the notes capture unrecognized speech.
+
 ## Write sourced notes
 
 Extract concise, useful items. Combine repeated discussion; include each distinct item once. Do not turn a suggestion, request, or possibility into a commitment or decision. Preserve disagreement and uncertainty. Every item must have at least one exact, nonempty quote from its cited segment, with enough context to support the interpretation.

@@ -459,6 +459,41 @@ test('copy and open retains copied request when profile routing is unavailable',
   }
 })
 
+test('transcription settings save audio duration independently from HTTP timeout', async () => {
+  const calls=[]
+  const rest=async (path,opts={})=>{
+    calls.push({path,...opts})
+    return opts.body || {endpoint:'http://asr.test/v1',model:'nemotron-3.5-transcribe-30b-a4b',timeout:600,max_audio_seconds:3600}
+  }
+  render(React.createElement(plugin.SettingsForm,{rest}))
+  const duration=await screen.findByLabelText('Maximum audio per request (minutes)')
+  assert.equal(duration.value,'60')
+  fireEvent.change(duration,{target:{value:'20'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save settings'}))
+  await screen.findByText(/New transcription plans use them/)
+  assert.equal(calls[1].body.max_audio_seconds,1200)
+  assert.equal(calls[1].body.timeout,600)
+})
+
+test('chunk progress and completed boundary review are visible', async () => {
+  const b=makeBackend()
+  const original=b.rest
+  let completed=false
+  b.rest=async (path,opts)=>{
+    const result=await original(path,opts)
+    if(path==='/meetings/m1') return {...result,active:completed?T:null,
+      job:{id:'j1',state:completed?'completed':'in_flight'},
+      transcription_chunks:[{index:1,start:0,duration:60,state:'completed',recognized_segments:3},{index:2,start:60,duration:30,state:completed?'completed':'in_flight',recognized_segments:completed?0:null}]}
+    return result
+  }
+  await openMeeting(b)
+  assert.ok(await screen.findByText(/1 of 2 audio chunks completed/))
+  cleanup(); completed=true
+  await openMeeting(b)
+  assert.ok(screen.getByText('2 transcription chunks'))
+  assert.ok(screen.getByText(/no words returned; review the audio/))
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }

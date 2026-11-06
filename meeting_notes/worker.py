@@ -4,8 +4,8 @@ import hashlib
 import threading
 import time
 from .store import atomic_write, uid
-from .transcript import normalize
-from .audio import prepare
+from .audio import prepare, slice_wave, cleanup_temporary_audio
+from .chunking import plan_for, parse_part, publish, PreparedAudioMismatch
 
 LEASE = 60
 
@@ -18,8 +18,12 @@ class Worker:
 
     def recover(self):
         with self.service.db() as db:
+            db.execute('BEGIN IMMEDIATE')
             # Even preparation is conservative after process death. Retry is explicit.
-            db.execute("UPDATE jobs SET state='interrupted_unknown',error='Host or lease ended; result unknown. Explicit Retry required.' WHERE state IN ('preparing','in_flight') AND lease < ?",(time.time(),))
+            db.execute("UPDATE jobs SET state='interrupted_unknown',error='Host or lease ended. Completed chunks are retained; an unfinished request may have an unknown outcome. Explicit Retry required.' WHERE state IN ('preparing','in_flight') AND lease < ?",(time.time(),))
+            db.execute("UPDATE asr_parts SET state='interrupted_unknown' WHERE state='in_flight' AND attempt IN (SELECT attempt FROM jobs WHERE state='interrupted_unknown')")
+            active = list(db.execute("SELECT meeting,attempt FROM jobs WHERE state IN ('preparing','in_flight')"))
+        cleanup_temporary_audio(self.service.root,{r['attempt'] for r in active},{r['meeting'] for r in active})
 
     def claim(self):
         self.recover()
@@ -50,21 +54,44 @@ class Worker:
                     db.execute("UPDATE jobs SET lease=? WHERE id=? AND owner=? AND attempt=? AND lease>=? AND state IN ('preparing','in_flight')",(time.time()+LEASE,job['id'],self.owner,job['attempt'],time.time()))
         heartbeat = threading.Thread(target=beat,daemon=True)
         heartbeat.start()
-        sent = False
+        sent, part_saved = False, False
+        part_path = None
         state, error = 'failed', 'Preparation failed; check ffmpeg, endpoint, model and Hermes ASR secret.'
         try:
-            adapter = self.adapter_factory(self.service.settings())
-            adapter.probe()
             wav = self.service.root/'audio'/f'{job["meeting"]}.wav'
-            prepare(job['audio'],wav)
+            with self.service.db() as db:
+                exists = db.execute('SELECT 1 FROM asr_plans WHERE job=?',(job['id'],)).fetchone()
+            if not exists or not wav.exists():
+                prepare(job['audio'],wav)
+            plan = plan_for(self,job,wav)
+            if plan is None:
+                return True
+            with self.service.db() as db:
+                part = db.execute("SELECT * FROM asr_parts WHERE job=? AND state NOT IN ('completed','superseded') ORDER BY start_frame LIMIT 1",(job['id'],)).fetchone()
+                total = db.execute("SELECT count(*) FROM asr_parts WHERE job=? AND state!='superseded'",(job['id'],)).fetchone()[0]
+            if part is None:
+                # Crash after the last part was saved: finalize locally, without
+                # another request (or even resolving ASR credentials).
+                state,error='failed','Saved chunks could not be assembled; Retry resumes without retranscribing completed chunks.'
+                if publish(self,job,plan): state,error='completed',None
+                return True
+            adapter = self.adapter_factory(json.loads(plan['settings']))
+            adapter.probe()
+            if total>1:
+                part_path = self.service.root/'audio'/f'{job["attempt"]}.part.wav'
+                slice_wave(wav,part_path,part['start_frame'],part['frames'])
+            request_audio = part_path or wav
             with self.service.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if not self.fenced(db,job):
                     return True
                 db.execute("UPDATE jobs SET state='in_flight' WHERE id=?",(job['id'],))
                 db.execute('UPDATE attempts SET sent=? WHERE id=?',(time.time(),job['attempt']))
+                db.execute('INSERT INTO asr_attempt_parts VALUES(?,?,?)',(job['attempt'],job['id'],part['idx']))
+                db.execute('INSERT INTO asr_attempt_settings VALUES(?,?)',(job['attempt'],plan['settings']))
+                db.execute("UPDATE asr_parts SET state='in_flight',attempt=? WHERE job=? AND idx=?",(job['attempt'],job['id'],part['idx']))
             sent = True
-            status, data = adapter.transcribe(wav)
+            status, data = adapter.transcribe(request_audio)
             path = self.service.root/'raw'/f'{job["attempt"]}.json'
             atomic_write(path,data)
             with self.service.db() as db:
@@ -73,25 +100,34 @@ class Worker:
             if status != 200:
                 state, error = 'interrupted_unknown', f'ASR HTTP {status}; response saved. Explicit Retry required.'
             else:
-                segments = normalize(json.loads(data),job['attempt'])
+                segments = parse_part(data,job['attempt'],part['frames']/plan['rate'],total>1)
                 with self.service.db() as db:
                     db.execute('BEGIN IMMEDIATE')
                     if not self.fenced(db,job):
+                        state,error='interrupted_unknown','Response saved after the lease ended; explicit Retry required.'
                         return True
-                    db.execute('INSERT INTO transcripts VALUES(?,?,?,?,?)',(job['attempt'],job['meeting'],str(path),hashlib.sha256(data).hexdigest(),json.dumps(segments)))
-                    db.execute('UPDATE meetings SET active=? WHERE id=?',(job['attempt'],job['meeting']))
-                    db.execute("UPDATE jobs SET state='completed',error=NULL,lease=NULL WHERE id=?",(job['id'],))
-                state,error = 'completed',None
+                    db.execute("UPDATE asr_parts SET state='completed',segments=?,raw=?,sha=? WHERE job=? AND idx=? AND attempt=?",
+                               (json.dumps(segments),path.name,hashlib.sha256(data).hexdigest(),job['id'],part['idx'],job['attempt']))
+                part_saved = True
+                state,error = 'failed','Saved chunks could not be assembled; Retry resumes without retranscribing completed chunks.'
+                complete = publish(self,job,plan)
+                state,error = ('completed' if complete else 'queued'),None
+        except PreparedAudioMismatch as exc:
+            state,error='failed',str(exc)
         except Exception:
             # Never expose HTTP exception strings (URLs, headers, provider response or transcripts).
-            if sent and state == 'failed':
+            if sent and state == 'failed' and not part_saved:
                 state,error = 'interrupted_unknown','Request interrupted; result unknown. Explicit Retry required.'
         finally:
             stop.set()
             heartbeat.join()
+            if part_path:
+                part_path.unlink(missing_ok=True)
             with self.service.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if self.fenced(db,job):
                     db.execute('UPDATE jobs SET state=?,error=?,lease=NULL WHERE id=?',(state,error,job['id']))
-                db.execute('UPDATE attempts SET outcome=? WHERE id=?',(state,job['attempt']))
+                    if not part_saved:
+                        db.execute('UPDATE asr_parts SET state=? WHERE job=? AND attempt=? AND state!=?',(state,job['id'],job['attempt'],'completed'))
+                db.execute('UPDATE attempts SET outcome=? WHERE id=?',('completed' if part_saved else state,job['attempt']))
         return True

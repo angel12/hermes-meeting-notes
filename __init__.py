@@ -23,7 +23,7 @@ def register(ctx):
         'meeting_list': ({},[],lambda a:runtime.service().list()),
         'meeting_get': ({'meeting_id':{'type':'string'}},['meeting_id'],lambda a:runtime.service().get(a['meeting_id'])),
         'meeting_correct': ({k:{'type':'integer' if k=='revision' else 'string'} for k in ('meeting_id','kind','target','value','revision')},['meeting_id','kind','target','value','revision'],lambda a:runtime.service().correct(a['meeting_id'],a['kind'],a['target'],a['value'],a['revision'])),
-        'meeting_retry_transcription': ({'meeting_id':{'type':'string'}},['meeting_id'],lambda a:_retry(runtime,a['meeting_id'])),
+        'meeting_retry_transcription': ({'meeting_id':{'type':'string'},'use_current_settings':{'type':'boolean'}},['meeting_id'],lambda a:_retry(runtime,a['meeting_id'],a.get('use_current_settings',False))),
     }
     for name,(properties,required,operation) in tools.items():
         def handler(args,_operation=operation,**kwargs):
@@ -36,12 +36,13 @@ def register(ctx):
         descriptions = {
             'meeting_transcript': 'Read corrected transcript text for meeting_notes:analyze. Pass source_profile from the meeting request if imported in another profile; only its selected analysis profile may read it. Start at offset 0; follow next_offset until null with the same basis and source_profile. No model call.',
             'meeting_save_notes': 'Validate and save notes produced in this session. Read the whole transcript first. Echo its basis and source_profile; use its short source IDs (s0, s1...) and exact quotes. Checks the actual Hermes profile and rejects stale revisions; creates no external tasks.',
+            'meeting_retry_transcription': 'Explicitly retry a stopped transcription. Completed chunks are retained. Set use_current_settings=true only when the user requests retry with updated endpoint/timeout/audio limit; unfinished audio is replanned, and the model must stay the same if any chunk completed.',
         }
-        description = descriptions.get(name,name.replace('_',' ')+'. Corrections require the current revision. Retry explicitly resubmits audio.')
+        description = descriptions.get(name,name.replace('_',' ')+'. Corrections require the current revision. Retry explicitly resumes unfinished audio chunks; completed chunks are retained.')
         ctx.register_tool(name=name,toolset='meeting_notes',schema={'name':name,'description':description, 'parameters':{'type':'object','properties':properties,'required':required,'additionalProperties':False}},handler=handler)
 
 
-def _retry(runtime,ident):
-    result=runtime.service().retry(ident)
+def _retry(runtime,ident,use_current_settings=False):
+    result=runtime.service().retry(ident,use_current_settings)
     runtime.start()
     return result

@@ -8,6 +8,7 @@ Early implementation of an import → diarized transcript → corrected speakers
 
 - Durable SQLite metadata, 8 MiB hashed multipart chunks, duplicate-chunk conflict detection and idempotent finalize.
 - Configurable NeMo-Speech.cpp endpoint/model/timeout. Only this adapter is supported.
+- Configurable maximum audio duration per ASR request (60 minutes by default). Longer recordings are split into bounded requests and assembled into one meeting with full-recording timestamps. Successful chunks are retained across explicit retries.
 - Backend-only authenticated transcription, local attempts, heartbeat/lease fencing, immutable response files saved before parsing, and explicit retry after unknown outcomes.
 - Deterministic timestamped segments, transcript-scoped IDs, whole-label merges, participant renames, segment speaker/text corrections and append-only undo with revision checks.
 - Prototype shared UI with explicit Upload and transcribe, persistent selection/error feedback, chunk progress, live transcription status, corrections and short WAV playback windows.
@@ -42,7 +43,7 @@ Concurrency is one active transcription per profile database. **Multiple indepen
 
 The UI caps uploads at 512 MiB (a local resource cap, not a verified model limit). Uploads currently expire logically after 24 hours but files require cleanup work. Finalize verifies every chunk again and returns the full file hash. ffmpeg creates a separate mono PCM16 16 kHz derivative; the imported original is retained untouched. Audio playback returns at most 30 seconds as base64 PCM WAV in authenticated JSON. Native OAuth-remote uploads are not supported by the inspected host bridge; local native backend and authenticated hosted Webapp are the intended test targets.
 
-Raw word confidence values from the verified server are placeholders and are not shown as confidence. Speaker labels are anonymous participants, not identities. No claim is made that audio after the final returned word is silence. ASR input limits and transcript completeness checks remain open.
+Raw word confidence values from the verified server are placeholders and are not shown as confidence. Speaker labels are anonymous participants, not identities. No claim is made that audio after the final returned word is silence. Transcript completeness and the serving host's practical limits still require review.
 
 Audio, transcripts and corrections remain in the profile's `plugin-data/meeting_notes` directory. ASR requests send audio to the configured endpoint. The notes skill reads the corrected transcript into the Hermes conversation, where it is processed by that session’s selected model and retained in normal chat history. There is no telemetry or external-task write. Test fixtures are synthetic; private recordings and responses must remain outside the repository and public demo assets.
 
@@ -65,6 +66,16 @@ The shared UI refreshes to show saved notes, quoted evidence and source playback
 Import and transcribe each recording, then choose **Combine meetings**. Add completed recordings in playback order, adjust the order if needed, and confirm the title, meeting date and timezone. Creating the combined meeting copies the current corrected transcripts and leaves the original recordings, transcripts, corrections and notes intact. Later source edits do not silently change the combined snapshot. Generate new notes from the combined meeting; previous notes and item IDs are not merged.
 
 Speaker identities remain separate across files, even when their displayed names match. Use the speakers panel to match them before analysis. Excerpts show both the combined time and original recording time; playback reads the original prepared audio and can cross a recording boundary. Recordings play back to back: no wall-clock gap, overlap removal or missing speech is inferred. Already combined meetings cannot be nested; select their original recordings instead. Duplicate submission of the same request returns the same meeting, and stale source revisions are rejected.
+
+## Model audio-duration limits
+
+In **Transcription settings**, set **Maximum audio per request (minutes)** to your serving model's limit or lower. It defaults to 60 minutes: NVIDIA documents [Nemotron 3.5 Transcribe's maximum supported audio length as one hour](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B). The separate request timeout controls how long a request can wait; it does not change the audio duration.
+
+The host prepares one full playback WAV and persists an exact frame-based request plan. Request sizes are balanced within the limit to avoid tiny final chunks. Longer recordings are cut at time boundaries without gaps, overlap or edits to the original. Requests run sequentially. Each attempt is persisted before submission, and each raw response is saved before parsing. Only a complete set of successful responses publishes the meeting transcript. Timestamps and citation playback refer to the original full recording. Speaker labels remain separate per chunk until you match them; review speech near cut points because a cut can divide a word or sentence.
+
+Progress shows completed chunks. A timeout, interrupted lease or failed chunk stops the job; **Retry transcription** resends only unfinished work using the saved plan. Completed responses are reused. If only final assembly failed, Retry assembles the saved results without any model request. For an unusable endpoint, timeout or duration limit, change Transcription settings and choose **Retry with current settings** on the stopped meeting. This replans unfinished audio while preserving completed chunks and prior attempt records. The model must stay the same if any chunk has completed. Changing settings alone never resubmits or replans a job.
+
+Chunks returning no words receive a visible audio-review warning, never an assertion of silence. Recognizable abandoned temporary WAVs older than a day are cleaned up during worker recovery; active attempts and original/full playback files are protected. If a missing playback WAV is regenerated with a different frame count, work stops with a specific error until the original prepared WAV is restored; it does not silently reuse mismatched timestamps. The existing 512 MiB upload cap still applies.
 
 ## Choose the Hermes analysis profile
 

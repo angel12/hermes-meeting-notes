@@ -22,8 +22,11 @@ class Service(Store):
         return audio_window(self, meeting, start, duration)
 
     def configure(self, settings):
-        if set(settings) != {'endpoint','model','timeout'}:
-            raise ValueError('Expected endpoint, model and timeout only; key belongs in Hermes secrets')
+        if set(settings) not in ({'endpoint','model','timeout'},{'endpoint','model','timeout','max_audio_seconds'}):
+            raise ValueError('Expected endpoint, model, timeout and max_audio_seconds; key belongs in Hermes secrets')
+        settings = {**settings,'max_audio_seconds':settings.get('max_audio_seconds',self.settings()['max_audio_seconds'])}
+        if type(settings['max_audio_seconds']) is not int or not 1 <= settings['max_audio_seconds'] <= 86400:
+            raise ValueError('Maximum audio per request must be 1–86400 seconds')
         url = urlsplit(settings['endpoint'])
         if url.scheme not in ('http','https') or not url.hostname or url.username or url.password or url.query or url.fragment:
             raise ValueError('Endpoint must be HTTP(S) without embedded credentials or query')
@@ -109,8 +112,17 @@ class Service(Store):
             db.execute('UPDATE uploads SET meeting=? WHERE id=?',(meeting,ident))
         return {'id':meeting, 'sha256':sha}
 
-    def retry(self, meeting):
+    def retry(self, meeting, use_current_settings=False):
+        if type(use_current_settings) is not bool:
+            raise ValueError('use_current_settings must be a boolean')
         with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            job = db.execute("SELECT id FROM jobs WHERE meeting=? AND state IN ('interrupted_unknown','failed','invalid_response')",(meeting,)).fetchone()
+            if not job:
+                raise ValueError('Only stopped jobs can be retried')
+            if use_current_settings:
+                from .chunking import replan_unfinished
+                replan_unfinished(db,job['id'],self.settings())
             cur = db.execute("UPDATE jobs SET state='queued',generation=generation+1,owner=NULL,lease=NULL,attempt=NULL,error=NULL WHERE meeting=? AND state IN ('interrupted_unknown','failed','invalid_response')",(meeting,))
             if not cur.rowcount:
                 raise ValueError('Only stopped jobs can be retried')

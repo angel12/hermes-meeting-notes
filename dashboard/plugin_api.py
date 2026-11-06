@@ -104,8 +104,10 @@ def start():
 
 
 @router.post('/meetings/{ident}/retry')
-def retry(ident: str):
-    result = call(lambda:runtime.service().retry(ident))
+def retry(ident: str, body: dict | None = None):
+    if body is not None and set(body) != {'use_current_settings'}:
+        raise HTTPException(400,'Expected use_current_settings')
+    result = call(lambda:runtime.service().retry(ident,(body or {}).get('use_current_settings',False)))
     runtime.start()
     return result
 

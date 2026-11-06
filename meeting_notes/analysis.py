@@ -73,6 +73,7 @@ def read_transcript(svc, meeting_id, offset=0, basis=None):
     return {
         'meeting_id': meeting_id, 'title': snapshot['title'], 'basis': basis_for(snapshot),
         'source_profile': snapshot.get('owner_profile'), 'analysis_profile': snapshot.get('analysis_profile'),
+        'transcription_chunks': snapshot.get('transcription_chunks',[]),
         'meeting_local_date': local_date, 'timezone': snapshot['timezone'],
         'participants': {s['participant']: s['name'] for s in snapshot['segments']},
         'segment_columns': ['id', 'participant', 'text'], 'segments': rows,

@@ -62,7 +62,9 @@ def combine(svc, request_id, title, date, timezone, sources):
             original = json.loads(db.execute('SELECT segments FROM transcripts WHERE id=?',(m['active'],)).fetchone()[0])
             corrections = [dict(c) for c in db.execute('SELECT * FROM corrections WHERE transcript=? ORDER BY revision',(m['active'],))]
             corrected = effective(original,corrections)
-            if not corrected or max(s['end'] for s in corrected) > count / 16000 + .1:
+            if not corrected:
+                raise ValueError('A source recording has no recognized words; review its audio before combining')
+            if max(s['end'] for s in corrected) > count / 16000 + .1:
                 raise ValueError('A source transcript extends beyond its recording; review it before combining')
             part = dict(meeting_id=m['id'], transcript_id=m['active'], revision=m['revision'],
                         title=m['title'], part=index+1, offset=frames/16000, frames=count,

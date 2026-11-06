@@ -65,6 +65,15 @@ class Store:
                 request_id TEXT UNIQUE NOT NULL, request_hash TEXT NOT NULL, parts TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS meeting_profiles(meeting TEXT PRIMARY KEY REFERENCES meetings(id),
                 profile TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS asr_plans(job TEXT PRIMARY KEY REFERENCES jobs(id),
+                transcript TEXT NOT NULL, settings TEXT NOT NULL, frames INTEGER NOT NULL, rate INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS asr_parts(job TEXT NOT NULL REFERENCES jobs(id), idx INTEGER NOT NULL,
+                start_frame INTEGER NOT NULL, frames INTEGER NOT NULL, state TEXT NOT NULL,
+                attempt TEXT, segments TEXT, raw TEXT, sha TEXT, PRIMARY KEY(job,idx));
+            CREATE TABLE IF NOT EXISTS asr_attempt_parts(attempt TEXT PRIMARY KEY REFERENCES attempts(id),
+                job TEXT NOT NULL, part INTEGER NOT NULL, FOREIGN KEY(job,part) REFERENCES asr_parts(job,idx));
+            CREATE TABLE IF NOT EXISTS asr_attempt_settings(attempt TEXT PRIMARY KEY REFERENCES attempts(id),
+                settings TEXT NOT NULL);
             ''')
 
     @contextlib.contextmanager
@@ -83,7 +92,8 @@ class Store:
     def settings(self):
         with self.db() as db:
             row = db.execute('SELECT data FROM settings WHERE id=1').fetchone()
-        return json.loads(row[0]) if row else dict(endpoint='http://10.0.1.128:18082/v1', model='nemotron-3.5-transcribe-30b-a4b', timeout=600)
+        defaults = dict(endpoint='http://10.0.1.128:18082/v1', model='nemotron-3.5-transcribe-30b-a4b', timeout=600, max_audio_seconds=3600)
+        return {**defaults,**json.loads(row[0])} if row else defaults
 
     def list(self):
         with self.db() as db:
@@ -104,6 +114,14 @@ class Store:
             composition = db.execute('SELECT parts FROM compositions WHERE meeting=?', (meeting,)).fetchone()
             result['recordings'] = json.loads(composition[0]) if composition else []
             result['job'] = dict(db.execute('SELECT id,state,error FROM jobs WHERE meeting=?', (meeting,)).fetchone())
+            plan = db.execute('SELECT * FROM asr_plans WHERE job=?',(result['job']['id'],)).fetchone()
+            result['transcription_chunks'] = []
+            if plan:
+                result['job']['max_audio_seconds'] = json.loads(plan['settings'])['max_audio_seconds']
+                result['transcription_chunks'] = [dict(index=index+1,start=p['start_frame']/plan['rate'],
+                    duration=p['frames']/plan['rate'],state=p['state'],
+                    recognized_segments=len(json.loads(p['segments'])) if p['segments'] is not None else None) for index,p in enumerate(db.execute(
+                    "SELECT * FROM asr_parts WHERE job=? AND state!='superseded' ORDER BY start_frame",(result['job']['id'],)))]
             result['segments'] = []
             if row['active']:
                 t = db.execute('SELECT segments FROM transcripts WHERE id=?', (row['active'],)).fetchone()

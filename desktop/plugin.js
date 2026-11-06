@@ -153,18 +153,18 @@ export function ensureStyles(doc = globalThis.document) {
 
 export const STATE_INFO = {
   queued: { label: 'Queued', tone: 'muted', active: true,
-    detail: 'Waiting to be sent for transcription. Queued work does not start by itself after the host restarts; use Start queued work if it stays here.' },
+    detail: 'Waiting for the next audio chunk. The running worker continues automatically; after a host restart, use Start queued work if needed.' },
   preparing: { label: 'Preparing audio', tone: 'default', active: true,
     detail: 'Converting the recording to the transcription format on the Hermes host.' },
   in_flight: { label: 'Transcribing', tone: 'default', active: true,
-    detail: 'Sent to the transcription server. No partial progress is reported; this page checks for the result every 3 seconds.' },
+    detail: 'The current chunk is being transcribed. Progress updates after each completed chunk; this page refreshes every 3 seconds.' },
   completed: { label: 'Transcribed', tone: 'success', active: false, detail: '' },
   interrupted_unknown: { label: 'Interrupted', tone: 'warn', active: false,
-    detail: 'The host stopped while waiting for the transcription server, so the outcome is unknown. Retry sends the audio again.' },
+    detail: 'Work was interrupted; an unfinished request may have an unknown outcome. Retry resumes unfinished audio and keeps completed chunks.' },
   failed: { label: 'Failed', tone: 'destructive', active: false,
     detail: 'Transcription did not complete. Check the transcription settings and the server, then retry.' },
   invalid_response: { label: 'Unreadable result', tone: 'destructive', active: false,
-    detail: 'The server responded, and the response was saved, but it could not be turned into a transcript. Retry sends the audio again.' }
+    detail: 'The response was saved but could not be turned into a transcript. Retry resends unfinished audio; completed chunks are kept.' }
 }
 export const RETRYABLE = ['failed', 'invalid_response', 'interrupted_unknown']
 export const stateInfo = state => STATE_INFO[state] || { label: String(state || 'Unknown'), tone: 'muted', active: false, detail: '' }
@@ -536,8 +536,8 @@ export function SettingsForm({ rest }) {
     event.preventDefault()
     setSaving(true); setError(''); setSaved('')
     try {
-      setSettings(await rest('/settings', { method: 'PUT', body: { endpoint: settings.endpoint.trim(), model: settings.model.trim(), timeout: Number(settings.timeout) } }))
-      setSaved('Settings saved. They apply to the next transcription request.')
+      setSettings(await rest('/settings', { method: 'PUT', body: { endpoint: settings.endpoint.trim(), model: settings.model.trim(), timeout: Number(settings.timeout), max_audio_seconds: Number(settings.max_audio_seconds ?? 3600) } }))
+      setSaved('Settings saved. New transcription plans use them; normal retries retain their saved settings. Use Retry with current settings to replan unfinished audio.')
     } catch (e) { setError(errorText(e)) }
     finally { setSaving(false) }
   }
@@ -553,7 +553,11 @@ export function SettingsForm({ rest }) {
       h('div', { className: 'mn-grid2' },
         h(Field, { label: 'Model' }, h('input', { className: 'mn-input', value: settings.model, onChange: set('model'), required: true, disabled: saving })),
         h(Field, { label: 'Request timeout (seconds)', hint: '30 to 7200.' },
-          h('input', { className: 'mn-input', type: 'number', min: 30, max: 7200, step: 1, value: settings.timeout, onChange: set('timeout'), required: true, disabled: saving }))),
+          h('input', { className: 'mn-input', type: 'number', min: 30, max: 7200, step: 1, value: settings.timeout, onChange: set('timeout'), required: true, disabled: saving })),
+        h(Field, { label: 'Maximum audio per request (minutes)', hint: 'Nemotron 3.5 supports up to 60 minutes. Set a lower limit if your server requires it. This is audio length, not request timeout.' },
+          h('input', { className: 'mn-input', type: 'number', min: 1 / 60, max: 1440, step: 'any', value: (settings.max_audio_seconds ?? 3600) / 60,
+            onChange: e => { setSaved(''); setSettings({ ...settings, max_audio_seconds: Math.round(Number(e.target.value) * 60) }) }, required: true, disabled: saving }))),
+      h('p', { className: 'mn-muted' }, 'Long recordings are cut at time boundaries, transcribed sequentially, and assembled into one meeting. Review speech near cut points and merge matching speakers across chunks. The original recording stays intact.'),
       h('div', { className: 'mn-row' }, h(Button, { type: 'submit', size: 'sm', disabled: saving }, saving ? 'Saving…' : 'Save settings')),
       h('p', { role: 'status', 'aria-live': 'polite', className: 'mn-muted' }, saved)),
     error && h(Callout, { tone: 'error', role: 'alert' }, error),
@@ -601,10 +605,13 @@ function StatusPanel({ meeting, busy, act }) {
   const retry = RETRYABLE.includes(meeting.job.state)
   return h(Callout, { tone: retry ? 'error' : 'info', title: info.label, role: retry ? 'alert' : undefined },
     info.detail && h('p', null, info.detail),
+    meeting.transcription_chunks?.length > 0 && h('p', { role: 'status' },
+      `${meeting.transcription_chunks.filter(c => c.state === 'completed').length} of ${meeting.transcription_chunks.length} audio chunks completed. Retry keeps completed chunks and resumes unfinished work.`),
     meeting.job.error && h('p', { className: 'mn-muted' }, `Details: ${meeting.job.error}`),
     info.active && meeting.job.state !== 'queued' && h('p', { className: 'mn-faint' }, 'You can close this page; the host keeps working. Quitting Hermes interrupts it.'),
     h('div', { className: 'mn-row' },
-      retry && btn({ variant: 'default', disabled: busy, onClick: () => act('Retry requested. The meeting is queued again.', rest => rest(`/meetings/${meeting.id}/retry`, { method: 'POST' })) }, 'Retry transcription'),
+      retry && btn({ variant: 'default', disabled: busy, onClick: () => act('Retry requested. Completed chunks are retained.', rest => rest(`/meetings/${meeting.id}/retry`, { method: 'POST' })) }, 'Retry transcription'),
+      retry && meeting.transcription_chunks?.length > 0 && btn({ disabled: busy, onClick: () => act('Retry requested with current settings. Completed chunks are retained; unfinished audio was replanned.', rest => rest(`/meetings/${meeting.id}/retry`, { method: 'POST', body: { use_current_settings: true } })) }, 'Retry with current settings'),
       meeting.job.state === 'queued' && btn({ disabled: busy, onClick: () => act('Queued work started.', rest => rest('/worker/start', { method: 'POST' })) }, 'Start queued work')))
 }
 
@@ -658,6 +665,7 @@ function SegmentRow({ s, participants, corrected, active, flash, busy, play, cor
         h('span', { className: 'mn-dot', 'aria-hidden': true, style: { '--mn-c': speakerColor(s.participant, participants) } }), label),
       h('button', { type: 'button', className: 'mn-time', onClick: () => play(s), 'aria-label': `Play from ${clock(s.start)}, ${label}` }, `▶ ${clock(s.start)}`),
       s.source && h('span', { className: 'mn-faint' }, `Recording ${s.source.part} · ${clock(s.source.start)}`),
+      s.chunk && h('span', { className: 'mn-faint' }, `Audio chunk ${s.chunk.index}`),
       corrected?.has('speaker') && h(Badge, { variant: 'outline' }, 'Speaker corrected'),
       corrected?.has('text') && h(Badge, { variant: 'outline' }, 'Text edited'),
       editing !== `text:${s.id}` && h('span', { className: 'mn-seg-actions' },
@@ -968,6 +976,14 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
         ready && analysis && h('span', null, `${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${analysis.needs_review ? ' · needs review' : ''}`))),
     notice && h(Callout, { tone: notice.tone || 'ok', role: 'status' }, h('p', null, notice.text)),
     h(AnalysisProfile, { meeting, rest, act, busy }),
+    meeting.transcription_chunks?.some(c => c.recognized_segments === 0) && meeting.segments.length > 0 &&
+      h(Callout, { tone: 'warn', title: 'Some audio has no recognized words', role: 'status' }, 'At least one chunk returned no words. Review its audio before relying on these notes; this does not prove silence.'),
+    meeting.transcription_chunks?.length > 1 && h('details', { className: 'mn-card' },
+      h('summary', null, `${meeting.transcription_chunks.length} transcription chunks`),
+      h('p', { className: 'mn-muted' }, 'Timestamps follow the full recording. Speaker labels are separate per chunk; merge matching speakers before generating notes. Review speech near the cut points.'),
+      h('ol', null, ...meeting.transcription_chunks.map(c => h('li', { key: c.index },
+        `${clock(c.start)} – ${clock(c.start + c.duration)} · ${stateInfo(c.state).label}${c.recognized_segments === 0 ? ' · no words returned; review the audio' : ''}`)))),
+    ready && !meeting.segments.length && h(Callout, { tone: 'warn', title: 'No words returned' }, 'The model returned no words. This does not confirm that the recording was silent.'),
     meeting.recordings?.length > 0 && h('details', { className: 'mn-card' },
       h('summary', null, `${meeting.recordings.length} combined recordings`),
       h('p', { className: 'mn-muted' }, 'Transcript snapshots in playback order. Match speakers across recordings before generating notes. Later edits to the originals do not change this meeting.'),
