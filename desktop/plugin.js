@@ -1361,9 +1361,10 @@ export function parseMeetingLink(href) {
 export function installMeetingLinks(ctx, hostApi = host, doc = globalThis.document) {
   const click = event => {
     const href = event.target?.closest?.('a[href]')?.getAttribute('href')
-    if (!parseMeetingLink(href) || !hostApi?.navigate || event.button !== 0 || event.defaultPrevented) return
+    if (!parseMeetingLink(href) || !hostApi?.navigate || event.button !== 0 || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     event.preventDefault()
     event.stopPropagation()
+    if (!globalThis.window?.dispatchEvent(new Event('meeting-notes:before-navigate', { cancelable: true }))) return
     hostApi.navigate(href.slice(1))
     globalThis.window?.dispatchEvent(new Event('meeting-notes:navigate'))
   }
@@ -1374,20 +1375,50 @@ export function installMeetingLinks(ctx, hostApi = host, doc = globalThis.docume
 }
 
 export function Meetings({ ctx }) {
-  const [location, setLocation] = useState(() => ({ href: globalThis.window?.location.hash || '', visit: 0 }))
+  const [location, setLocation] = useState(() => ({ target: parseMeetingLink(globalThis.window?.location.hash || ''), visit: 0 }))
+  const [linkNotice, setLinkNotice] = useState('')
+  const locked = useRef(false)
+  const onLock = useCallback(value => { locked.current = value }, [])
   useEffect(() => {
-    const changed = () => setLocation(old => ({ href: globalThis.window?.location.hash || '', visit: old.visit + 1 }))
+    const changed = event => {
+      const target = parseMeetingLink(window.location.hash)
+      // Route tiles remain mounted beside chat. Unrelated navigation must not
+      // reset an upload, editor, selection or player inside this tile.
+      if (!target) return
+      if (locked.current) { setLinkNotice('Finish the current upload or change, then open the meeting link again.'); return }
+      setLocation(old => JSON.stringify(old.target) === JSON.stringify(target) && event.type !== 'meeting-notes:navigate'
+        ? old : { target, visit: old.visit + 1 })
+      setLinkNotice('')
+    }
+    const before = event => {
+      if (locked.current) {
+        event.preventDefault()
+        setLinkNotice('Finish the current upload or change, then open the meeting link again.')
+      }
+    }
     window.addEventListener('hashchange', changed)
+    window.addEventListener('popstate', changed)
     window.addEventListener('meeting-notes:navigate', changed)
+    window.addEventListener('meeting-notes:before-navigate', before)
     return () => {
       window.removeEventListener('hashchange', changed)
+      window.removeEventListener('popstate', changed)
       window.removeEventListener('meeting-notes:navigate', changed)
+      window.removeEventListener('meeting-notes:before-navigate', before)
     }
   }, [])
-  return h(MeetingLinkTarget, { key: location.href + ':' + location.visit, ctx, target: parseMeetingLink(location.href) })
+  const reset = () => {
+    if (locked.current) return
+    host?.navigate?.('/meeting-notes')
+    setLocation(old => ({ target: null, visit: old.visit + 1 }))
+    setLinkNotice('')
+  }
+  return h(Fragment, null,
+    linkNotice && h('p', { role: 'status' }, linkNotice),
+    h(MeetingLinkTarget, { key: JSON.stringify(location.target) + ':' + location.visit, ctx, target: location.target, onLock, reset }))
 }
 
-function MeetingLinkTarget({ ctx, target }) {
+function MeetingLinkTarget({ ctx, target, onLock, reset }) {
   const [scope, setScope] = useState(target?.profile ? 'checking' : 'ready')
   const [error, setError] = useState('')
   useEffect(() => {
@@ -1400,13 +1431,14 @@ function MeetingLinkTarget({ ctx, target }) {
     }).catch(() => { if (live) { setScope('blocked'); setError('Could not verify the meeting’s importing profile. Open that profile on the importing connection, then try the link again.') } })
     return () => { live = false }
   }, [ctx.rest, target?.profile])
-  if (scope !== 'ready') return h('div', { className: 'mn-page', role: 'status' }, error || 'Checking meeting profile…')
-  return h(MeetingWorkspace, { ctx, target })
+  if (scope !== 'ready') return h('div', { className: 'mn-page', role: 'status' }, error || 'Checking meeting profile…',
+    btn({ onClick: reset }, 'Show Meeting Notes'))
+  return h(MeetingWorkspace, { ctx, target, onLock })
 }
 
 let lastSelected = null // survives route remounts within one app session
 
-function MeetingWorkspace({ ctx, target }) {
+function MeetingWorkspace({ ctx, target, onLock }) {
   const rest = ctx.rest
   const [meetings, setMeetings] = useState([])
   const [loaded, setLoaded] = useState(false)
@@ -1415,6 +1447,7 @@ function MeetingWorkspace({ ctx, target }) {
   const [tab, setTab] = useState(target?.tab || 'transcript')
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
+  useEffect(() => { onLock(busy || uploading); return () => onLock(false) }, [busy, uploading, onLock])
   const [notice, setNotice] = useState(null)
   const [actionError, setActionError] = useState('')
   const [pollError, setPollError] = useState('')
@@ -1434,13 +1467,14 @@ function MeetingWorkspace({ ctx, target }) {
     try { meeting = await rest(`/meetings/${id}`) }
     catch (e) {
       if (/not found/i.test(errorText(e)) && selectedId.current === id) {
-        selectedId.current = null; lastSelected = null; setSelected(null)
+        selectedId.current = null; if (lastSelected === id) lastSelected = null; setSelected(null)
         setView(v => (v === 'meeting' ? 'home' : v))
       }
+      if (target?.meeting === id && /not found/i.test(errorText(e))) throw new Error('This meeting is not on this connection, or it was deleted. Open its importing connection and profile.')
       throw e
     }
     // Drop stale poll results: a different meeting was opened or a correction landed meanwhile.
-    if (selectedId.current === id && mutation.current === seq) setSelected(meeting)
+    if (selectedId.current === id && mutation.current === seq) { setSelected(meeting); lastSelected = id }
   }, [rest])
 
   const refresh = useCallback(async () => {
@@ -1482,6 +1516,7 @@ function MeetingWorkspace({ ctx, target }) {
   }
 
   const open = async (id, message = null) => {
+    if (parseMeetingLink(globalThis.window?.location.hash)) window.history.replaceState(window.history.state, '', '#/meeting-notes')
     selectedId.current = id
     lastSelected = id
     setView('meeting'); setNotice(message); setActionError('')
@@ -1538,7 +1573,7 @@ function MeetingWorkspace({ ctx, target }) {
   }
 
   const deleted = (result, deletedId) => {
-    mutation.current++; closePlayer(); selectedId.current = null; lastSelected = null; setSelected(null)
+    mutation.current++; closePlayer(); selectedId.current = null; if (lastSelected === id) lastSelected = null; setSelected(null)
     setView('home'); setActionError(''); setPollError(''); setMeetings(rows => rows.filter(m => m.id !== deletedId))
     setNotice({ tone: result.pending_files ? 'warn' : 'ok', text: result.pending_files ? 'Meeting deleted. Some managed files await cleanup; reconnect storage and use Retry file cleanup in settings.' : 'Meeting and its managed files deleted.' })
   }

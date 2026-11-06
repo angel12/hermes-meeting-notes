@@ -804,8 +804,10 @@ test('meeting links open notes and actions, enforce source profile, and stay rea
   mount(b)
   await screen.findByRole('tab', { name: /Notes/ })
   assert.equal(screen.getByRole('tab', { name: /Notes/ }).getAttribute('aria-selected'), 'true')
+  fireEvent.click(screen.getByRole('tab', { name: /Transcript/ }))
+  assert.equal(screen.getByRole('tab', { name: /Transcript/ }).getAttribute('aria-selected'), 'true')
   fireEvent(window, new Event('meeting-notes:navigate'))
-  await screen.findByRole('tab', { name: /Notes/ })
+  await waitFor(() => assert.equal(screen.getByRole('tab', { name: /Notes/ }).getAttribute('aria-selected'), 'true'))
   window.location.hash = '#/meeting-notes?meeting=m1&tab=actions&profile=default'
   fireEvent(window, new Event('hashchange'))
   await waitFor(() => assert.equal(screen.getByRole('tab', { name: /Action Items/ }).getAttribute('aria-selected'), 'true'))
@@ -816,6 +818,10 @@ test('meeting links open notes and actions, enforce source profile, and stay rea
   await screen.findByText(/Switch to that profile/)
   assert.deepEqual([...new Set(denied.calls.map(c => c.path))], ['/analysis-profiles'])
   assert.equal(mutations(b.calls).length, 0)
+  window.history.pushState({}, '', '#/meeting-notes')
+  fireEvent.click(screen.getByRole('button', { name: 'Show Meeting Notes' }))
+  await screen.findByRole('button', { name: /^Synthetic planning sync/ })
+  assert.equal(screen.queryByText(/Switch to that profile/), null)
   cleanup(); window.location.hash = ''
 })
 
@@ -831,13 +837,74 @@ test('only valid Meeting Notes links are intercepted and listener is disposed', 
   a.dispatchEvent(click)
   assert.equal(click.defaultPrevented, true)
   assert.deepEqual(navigated, ['/meeting-notes?meeting=m1&tab=notes&profile=default'])
-  dispose(); a.remove()
+  for (const extra of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { button: 1 }]) {
+    const modified = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...extra })
+    a.dispatchEvent(modified)
+    assert.equal(modified.defaultPrevented, false)
+  }
+  const prevented = new MouseEvent('click', { bubbles: true, cancelable: true })
+  prevented.preventDefault(); a.dispatchEvent(prevented)
+  assert.equal(navigated.length, 1)
+  dispose()
+  const after = new MouseEvent('click', { bubbles: true, cancelable: true })
+  a.dispatchEvent(after)
+  assert.equal(after.defaultPrevented, false)
+  assert.equal(navigated.length, 1)
+  a.remove()
+})
+
+test('unrelated hash and history navigation preserve an unsaved transcript edit', async () => {
+  const b = makeBackend()
+  await openMeeting(b)
+  fireEvent.click(screen.getByRole('button', { name: 'Edit text at 0:05' }))
+  const input = screen.getByRole('textbox', { name: 'Segment text' })
+  fireEvent.change(input, { target: { value: 'Unsaved synthetic edit' } })
+  window.location.hash = '#/settings'
+  fireEvent(window, new Event('hashchange'))
+  window.history.pushState({}, '', '#/other')
+  fireEvent(window, new Event('popstate'))
+  assert.equal(screen.getByRole('textbox', { name: 'Segment text' }), input)
+  assert.equal(input.value, 'Unsaved synthetic edit')
+  assert.equal(mutations(b.calls).length, 0)
+})
+
+test('profile lookup failure has an escape and does not fetch meetings', async () => {
+  window.history.replaceState({}, '', '#/meeting-notes?meeting=m1&tab=notes&profile=default')
+  const calls = []
+  mount({ rest: async p => { calls.push(p); throw new Error('offline') } })
+  await screen.findByText(/Could not verify/)
+  assert.ok(screen.getByRole('button', { name: 'Show Meeting Notes' }))
+  assert.deepEqual(calls, ['/analysis-profiles'])
+})
+
+test('a meeting link cannot remount a workspace with a save in flight', async () => {
+  const b = makeBackend(); const original = b.rest
+  let finish
+  b.rest = async (path, opts) => {
+    if (path === '/meetings/m1/corrections') await new Promise(resolve => { finish = resolve })
+    return original(path, opts)
+  }
+  await openMeeting(b)
+  fireEvent.click(screen.getByRole('button', { name: 'Edit text at 0:05' }))
+  fireEvent.change(screen.getByLabelText('Segment text'), { target: { value: 'Pending synthetic edit' } })
+  fireEvent.keyDown(screen.getByLabelText('Segment text'), { key: 'Enter' })
+  await waitFor(() => assert.equal(typeof finish, 'function'))
+  const input = screen.getByLabelText('Segment text')
+  const before = new Event('meeting-notes:before-navigate', { cancelable: true })
+  fireEvent(window, before)
+  assert.equal(before.defaultPrevented, true)
+  window.history.replaceState({}, '', '#/meeting-notes?meeting=m1&tab=notes')
+  fireEvent(window, new Event('hashchange'))
+  assert.equal(screen.getByLabelText('Segment text'), input)
+  assert.ok(screen.getByText(/Finish the current upload or change/))
+  finish()
+  await screen.findByText('Pending synthetic edit')
 })
 
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }
   catch (e) { failed++; console.error(`FAIL - ${t.name}\n${e.stack}`) }
-  finally { cleanup() }
+  finally { cleanup(); window.history.replaceState({}, '', '/') }
 }
 process.exit(failed ? 1 : 0)
