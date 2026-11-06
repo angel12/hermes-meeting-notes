@@ -35,3 +35,6 @@ Updated scripts/webapp_smoke.py for the new navigation, upload, playback, rename
 The notes request now invokes the bundled session skill. The agent reads transcript pages and saves its own analysis with meeting_save_notes; there is no nested inference call.
 
 Per-meeting Analysis profile now lists existing Hermes profiles on the importing host and persists the selection with revision checks. Notes requests carry the importing `source_profile`; Copy request and open profile resolves only the selected target on the original connection using public SDK routes, then opens a normal chat draft. It never auto-submits or overrides the model. Unavailable or ambiguous routes fail visibly. A single-profile Webapp cannot route another profile. Saved notes display their actual analysis profile. Interaction checks cover selector persistence, unavailable saved profiles, and duplicate profile names on separate connections. Host visual acceptance is still open.
+
+
+Deployment update: the polished shared UI, combined-recording form and profile selector are now installed on the Compose test host after Opus 5.5 review and fixes. The host-reconciled `desktop/plugin.js` matches the local artifact exactly. Seventy-four tests and authenticated API/playback checks pass. Reload the Webapp to load it; real host visual acceptance and native Desktop checks are still pending.

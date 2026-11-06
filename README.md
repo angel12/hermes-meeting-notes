@@ -16,7 +16,7 @@ Early implementation of an import → diarized transcript → corrected speakers
 - Combine 2–20 completed recordings in a chosen order into a new meeting without retranscription. Corrected transcript snapshots retain recording/segment provenance, independent speaker labels and audio playback across file boundaries. Original meetings remain unchanged.
 - A persistent Hermes analysis-profile selector per meeting. The selected profile may read that meeting's transcript and save sourced notes back to its importing profile; saved analyses record the actual profile. Profile changes invalidate in-flight notes.
 
-**Not release-ready.** Authenticated Webapp passes the synthetic upload/transcription/playback smoke test on the remote Compose host; native Desktop checks remain open. Shared UI polish, combining recordings and profile selection are implemented locally and need host acceptance. External-task integration, owner/date confirmation, upload expiration cleanup and offline response reparse remain open. No external task system is simulated.
+**Not release-ready.** Authenticated Webapp passes the synthetic upload/transcription/playback smoke test on the remote Compose host; native Desktop checks remain open. Shared UI polish, combining recordings and profile selection are deployed to the test Webapp and need visual/user acceptance. External-task integration, owner/date confirmation, upload expiration cleanup and offline response reparse remain open. No external task system is simulated.
 
 ## Development
 
