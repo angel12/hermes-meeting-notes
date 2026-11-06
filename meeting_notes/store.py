@@ -54,6 +54,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS corrections(id TEXT PRIMARY KEY, transcript TEXT NOT NULL REFERENCES transcripts(id),
                 revision INTEGER NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS transcription_connections(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, size INTEGER NOT NULL, metadata TEXT NOT NULL,
                 meeting TEXT, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS chunks(upload TEXT NOT NULL REFERENCES uploads(id), idx INTEGER NOT NULL,
@@ -127,10 +128,13 @@ class Store:
             db.close()
 
     def settings(self):
+        from .connections import effective
+        return effective(self.connections())
+
+    def connections(self):
+        from .connections import read
         with self.db() as db:
-            row = db.execute('SELECT data FROM settings WHERE id=1').fetchone()
-        defaults = dict(endpoint='http://10.0.1.128:18082/v1', model='nemotron-3.5-transcribe-30b-a4b', timeout=600, max_audio_seconds=3600)
-        return {**defaults,**json.loads(row[0])} if row else defaults
+            return read(db)
 
     def list(self):
         with self.db() as db:

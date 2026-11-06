@@ -30,8 +30,9 @@ def replan_unfinished(db, job, settings):
     pending = [p for p in parts if p['state'] != 'completed']
     if not pending:
         return
-    if any(p['state']=='completed' for p in parts) and settings['model'] != json.loads(plan['settings'])['model']:
-        raise ValueError('Keep the original model when reusing completed chunks; endpoint, timeout and duration limit may change')
+    old = json.loads(plan['settings'])
+    if any(p['state']=='completed' for p in parts) and (settings['model'] != old['model'] or settings.get('adapter','nemo_speech_cpp') != old.get('adapter','nemo_speech_cpp')):
+        raise ValueError('Keep the original model and adapter when reusing completed chunks; endpoint, timeout and duration limit may change')
     next_index = db.execute('SELECT max(idx)+1 FROM asr_parts WHERE job=?',(job,)).fetchone()[0]
     # Keep replaced rows and their attempt links for audit; completed parts are immutable.
     for part in pending:
@@ -67,16 +68,18 @@ def plan_for(worker, job, wav):
         return dict(plan)
 
 
-def parse_part(data, attempt, duration, split):
+def parse_part(data, attempt, duration, split, adapter='nemo_speech_cpp'):
     raw = json.loads(data)
     if not isinstance(raw,dict):
         raise ValueError('Expected an ASR response object')
+    from .asr import canonical_response
+    raw = canonical_response(raw, adapter)
     # No recognized words is not proof of silence. Preserve the response and
     # expose the empty part in the UI; do not fabricate speech or diarization.
     if raw.get('words') == [] and isinstance(raw.get('text'),str) and not raw['text'].strip():
         return []
     segments = normalize(raw,attempt)
-    if split and any(s['end'] > duration+.1 for s in segments):
+    if (split or adapter == 'xai_oauth') and any(s['end'] > duration+.1 for s in segments):
         raise ValueError('ASR timestamps exceed the requested audio chunk')
     return segments
 

@@ -31,7 +31,7 @@ ssh spencer@10.0.1.72 'cd ~/hermes-test && docker compose down'
 
 `down` preserves the bind-mounted data. A plugin Python change needs the test host restarted; refresh/reconcile the desktop copy for JS changes. Do not mount the Docker socket, production Hermes homes, or private recordings into this test container.
 
-The official image currently warns that its venv is out of sync with `uv.lock`; the runtime starts and required plugin dependencies are present. The test image now layers a Webapp-only idle-callback compatibility script over the pinned upstream image; core Python and compiled application bundles remain unchanged. The default chat model is `glm-5.3` through the custom OpenAI-compatible LiteLLM endpoint `http://10.0.1.72:4000/v1` using `chat_completions`. `model.key_env` resolves `LITELLM_API_KEY` from the private Compose credentials file. ASR remains independent.
+The official image currently warns that its venv is out of sync with `uv.lock`; the runtime starts and required plugin dependencies are present. The derived image layers the Webapp idle-callback compatibility script and the explicit provider-request API extension described below over the pinned upstream image. Compiled application bundles remain unchanged. The default chat model is `glm-5.3` through the custom OpenAI-compatible LiteLLM endpoint `http://10.0.1.72:4000/v1` using `chat_completions`. `model.key_env` resolves `LITELLM_API_KEY` from the private Compose credentials file. ASR remains independent.
 
 Run the browser test from the project with Playwright installed and a private password file. Never put the password itself in command arguments:
 
@@ -44,7 +44,17 @@ The optional audio test uses the actual file input, closes the tab after finaliz
 
 ## Browser compatibility patch
 
-The upstream v0.23.0 Capabilities catalog prefetch calls `requestIdleCallback` unconditionally. Browsers without this API fail to render the workspace. The derived image `hermes-meeting-notes-test:idle-compat-v1` inserts a same-origin compatibility script before the renderer module. It provides cancellable timer callbacks only when the native API pair is unavailable. It does not simulate actual browser idle time or relax CSP.
+The upstream v0.23.0 Capabilities catalog prefetch calls `requestIdleCallback` unconditionally. Browsers without this API fail to render the workspace. The derived image inserts a same-origin compatibility script before the renderer module. It provides cancellable timer callbacks only when the native API pair is unavailable. It does not simulate actual browser idle time or relax CSP.
+
+## Experimental OAuth multipart host API
+
+The `oauth-stt-v1` image also applies `provider-requests.patch` to the host's `hermes_cli/plugin_provider_requests.py`. The build verifies the original module SHA-256 and checks the patch before applying it; an upstream change stops the build for review. This is a local host extension, not a claim of upstream support. No running plugin modifies Hermes code or reads its credential stores.
+
+The patch adds the existing `xai-oauth` sign-in to core-made requests, multipart `data`/`files` arguments, and `provider_request_capabilities()` (a static, credential-free check). An installed plugin still needs `requires_auth: [xai-oauth]`. Hermes uses its own profile-aware credential resolver, rejects API-key fallback and foreign credential origins, attaches authorization itself and returns only response status/headers/body. Multipart options precede the file, redirects are disabled, proxy environment variables are ignored, and no upload is retried automatically. Authentication/transport exceptions exposed to the plugin contain fixed messages rather than credential-bearing request objects.
+
+Sign in to xAI through Hermes on the test host's default profile only when testing this optional connection. The plugin's Custom connection works without any xAI sign-in. A successful OAuth login is not proof of STT entitlement. Live transcription should use a short synthetic two-speaker recording before any real recording; this has not yet been accepted against an xAI subscription.
+
+Tests apply the patch to a temporary copy of the pinned module, use real core plugin admission with synthetic manifests/profiles, and mock only provider credentials and HTTP transport. They do not edit the installed Hermes source or use real auth stores. Rollback: restore the previous image and plugin together; leave the additive `transcription_connections` table intact. The legacy settings row continues to contain the saved Custom connection for older plugin versions. Back up plugin data and configured audio directories before deployment, and recreate only when transcription/storage/chat work is idle.
 
 Rebuild/redeploy from this directory with `docker compose up -d --build webapp`. The build context allowlist excludes all credentials and persisted data. To remove the workaround after an upstream fix, restore the Compose service's image to the pinned `HERMES_TEST_IMAGE`, remove its build block, and recreate it. Persistent data is unchanged.
 

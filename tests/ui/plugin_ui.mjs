@@ -546,21 +546,73 @@ test('failed draft fill copies the request on a modern host', async () => {
   }
 })
 
-test('transcription settings save audio duration independently from HTTP timeout', async () => {
+function connectionBackend(available = true) {
+  let state = {active:'custom',revision:0,connections:{
+    custom:{endpoint:'http://asr.test/v1',model:'nemotron-3.5-transcribe-30b-a4b',timeout:600,max_audio_seconds:3600},
+    xai:{endpoint:'https://api.x.ai/v1',model:'grok-voice-transcribe-2.0',timeout:900,max_audio_seconds:1200}},
+    availability:{custom:{available:true},xai:{available,message:available?'Hermes host supports OAuth multipart requests.':'Host extension required.'}}}
   const calls=[]
   const rest=async (path,opts={})=>{
     calls.push({path,...opts})
     if (path === '/storage-settings') return {directory:'',managed_path:'/profile',compress_playback:false,archive_mode:'original'}
-    return opts.body || {endpoint:'http://asr.test/v1',model:'nemotron-3.5-transcribe-30b-a4b',timeout:600,max_audio_seconds:3600}
+    if (path === '/deletions') return {pending_files:0}
+    if (opts.method) {
+      assert.equal(opts.body.revision,state.revision)
+      if (path === '/connections/active') state={...state,active:opts.body.provider,revision:state.revision+1}
+      else state={...state,revision:state.revision+1,connections:{...state.connections,[path.split('/').at(-1)]:opts.body.settings}}
+    }
+    return structuredClone(state)
   }
-  render(React.createElement(plugin.SettingsForm,{rest}))
+  return {rest,calls,get:()=>state}
+}
+
+test('transcription settings save audio duration independently from HTTP timeout', async () => {
+  const b=connectionBackend()
+  render(React.createElement(plugin.SettingsForm,{rest:b.rest}))
   const duration=await screen.findByLabelText('Maximum audio per request (minutes)')
   assert.equal(duration.value,'60')
   fireEvent.change(duration,{target:{value:'20'}})
   fireEvent.click(screen.getByRole('button',{name:'Save settings'}))
   await screen.findByText(/New transcription plans use them/)
-  assert.equal(calls.find(c => c.method === 'PUT').body.max_audio_seconds,1200)
-  assert.equal(calls.find(c => c.method === 'PUT').body.timeout,600)
+  assert.equal(b.calls.find(c => c.method === 'PUT').body.settings.max_audio_seconds,1200)
+  assert.equal(b.calls.find(c => c.method === 'PUT').body.settings.timeout,600)
+})
+
+test('optional xAI saves separately and switching back restores Custom settings', async () => {
+  const b=connectionBackend(); const original=structuredClone(b.get().connections.custom)
+  render(React.createElement(plugin.SettingsForm,{rest:b.rest}))
+  const selector=await screen.findByLabelText('Connection to configure')
+  fireEvent.change(selector,{target:{value:'xai'}})
+  assert.equal(b.calls.filter(c=>c.method).length,0)
+  assert.equal(screen.getByLabelText('Server endpoint').value,'https://api.x.ai/v1')
+  assert.equal(screen.getByLabelText('Server endpoint').disabled,true)
+  assert.ok(screen.getByText(/Active connection: Custom/))
+  fireEvent.change(screen.getByLabelText('Request timeout (seconds)'),{target:{value:'1000'}})
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true)
+  fireEvent.click(screen.getByRole('button',{name:'Save settings'}))
+  await screen.findByText(/Connection saved/)
+  assert.equal(b.get().active,'custom')
+  assert.deepEqual(b.get().connections.custom,original)
+  fireEvent.click(screen.getByRole('button',{name:'Use this connection'}))
+  await screen.findByText(/Active connection: xAI/)
+  assert.equal(b.get().active,'xai')
+  fireEvent.change(selector,{target:{value:'custom'}})
+  assert.equal(screen.getByLabelText('Server endpoint').value,original.endpoint)
+  assert.equal(screen.getByLabelText('Request timeout (seconds)').value,'600')
+  fireEvent.click(screen.getByRole('button',{name:'Use this connection'}))
+  await screen.findByText(/Active connection: Custom/)
+  assert.equal(b.get().connections.xai.timeout,1000)
+  assert.deepEqual(b.get().connections.custom,original)
+})
+
+test('an unextended host can save optional xAI settings but cannot activate it', async () => {
+  const b=connectionBackend(false)
+  render(React.createElement(plugin.SettingsForm,{rest:b.rest}))
+  fireEvent.change(await screen.findByLabelText('Connection to configure'),{target:{value:'xai'}})
+  assert.ok(screen.getByText(/Host extension required/))
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true)
+  assert.equal(screen.getByRole('button',{name:'Save settings'}).disabled,false)
+  assert.equal(document.querySelectorAll('input[type=password]').length,0)
 })
 
 test('chunk progress and completed boundary review are visible', async () => {

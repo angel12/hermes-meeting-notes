@@ -7,6 +7,7 @@ from .store import atomic_write, uid
 from .audio import prepare, slice_wave, cleanup_temporary_audio
 from .chunking import plan_for, parse_part, publish, PreparedAudioMismatch
 from . import storage
+from .asr import SetupError
 
 LEASE = 60
 
@@ -120,8 +121,11 @@ class Worker:
             state, error = 'invalid_response', 'Response saved but invalid; inspect adapter compatibility. No automatic resend.'
             if status != 200:
                 state, error = 'interrupted_unknown', f'ASR HTTP {status}; response saved. Explicit Retry required.'
+                if json.loads(plan['settings']).get('adapter') == 'xai_oauth' and status in (401,402,403,429):
+                    error += ' Check the host xAI login, STT entitlement and usage limits. No API-key fallback was used.'
             else:
-                segments = parse_part(data,job['attempt'],part['frames']/plan['rate'],total>1)
+                segments = parse_part(data,job['attempt'],part['frames']/plan['rate'],total>1,
+                                      json.loads(plan['settings']).get('adapter','nemo_speech_cpp'))
                 with self.service.db() as db:
                     db.execute('BEGIN IMMEDIATE')
                     if not self.fenced(db,job):
@@ -134,6 +138,9 @@ class Worker:
                 complete = publish(self,job,plan)
                 state,error = ('completed' if complete else 'queued'),None
         except PreparedAudioMismatch as exc:
+            state,error='failed',str(exc)
+        except SetupError as exc:
+            # These fixed errors are raised only before any audio submission.
             state,error='failed',str(exc)
         except Exception:
             # Never expose HTTP exception strings (URLs, headers, provider response or transcripts).

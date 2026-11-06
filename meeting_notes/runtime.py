@@ -5,7 +5,7 @@ import logging
 import sqlite3
 from .service import Service
 from .worker import Worker
-from .asr import NemoSpeechCpp
+from .asr import NemoSpeechCpp, XaiOAuth, SetupError
 
 _lock = threading.Lock()
 _workers = {}
@@ -32,6 +32,24 @@ def analysis_service(meeting, source_profile=None):
     return scoped(meeting,source_profile)
 
 
+def adapter_for(settings, root):
+    def check_owner():
+        # Check in the worker, without carrying request secret context across profiles.
+        if service().root.resolve() != root.resolve():
+            raise SetupError('Transcription host profile changed. Restart the owning profile host before retrying.')
+    check_owner()
+    kind = settings.get('adapter', 'nemo_speech_cpp')
+    if kind == 'xai_oauth':
+        return XaiOAuth(settings, check_owner)
+    if kind != 'nemo_speech_cpp':
+        raise SetupError('Unsupported transcription adapter')
+    from agent.secret_scope import get_secret
+    secret = get_secret('MEETING_NOTES_ASR_KEY')
+    if not secret:
+        raise SetupError('Configure MEETING_NOTES_ASR_KEY in Hermes for NeMo-Speech.cpp.')
+    return NemoSpeechCpp(settings, secret)
+
+
 def work_loop(worker):
     while True:
         try:
@@ -53,15 +71,7 @@ def start():
         if key in _workers and _workers[key].is_alive():
             return
         def run():
-            def adapter(settings):
-                # Recheck isolation inside worker. Do not retain request context or key.
-                service()
-                from agent.secret_scope import get_secret
-                secret = get_secret('MEETING_NOTES_ASR_KEY')
-                if not secret:
-                    raise ValueError('Configure MEETING_NOTES_ASR_KEY in Hermes')
-                return NemoSpeechCpp(settings,secret)
-            worker = Worker(svc,adapter)
+            worker = Worker(svc,lambda settings:adapter_for(settings,svc.root))
             work_loop(worker)
         thread = threading.Thread(target=run,name='meeting-notes-worker',daemon=True)
         _workers[key] = thread

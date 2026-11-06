@@ -675,44 +675,68 @@ export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, dis
 
 export function SettingsForm({ rest }) {
   const [settings, setSettings] = useState(null)
+  const [connections, setConnections] = useState(null), [editing, setEditing] = useState('custom')
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
   const [saving, setSaving] = useState(false)
-  useEffect(() => { rest('/settings').then(setSettings).catch(e => setError(errorText(e))) }, [rest])
+  useEffect(() => { let live = true
+    rest('/connections').then(v => { if (live) { setConnections(v); setEditing(v.active); setSettings(v.connections[v.active]) } }).catch(e => { if (live) setError(errorText(e)) })
+    return () => { live = false }
+  }, [rest])
   const save = async event => {
     event.preventDefault()
     setSaving(true); setError(''); setSaved('')
     try {
-      setSettings(await rest('/settings', { method: 'PUT', body: { endpoint: settings.endpoint.trim(), model: settings.model.trim(), timeout: Number(settings.timeout), max_audio_seconds: Number(settings.max_audio_seconds ?? 3600) } }))
-      setSaved('Settings saved. New transcription plans use them; normal retries retain their saved settings. Use Retry with current settings to replan unfinished audio.')
+      const v = await rest(`/connections/${editing}`, { method: 'PUT', body: { revision: connections.revision, settings: { endpoint: settings.endpoint.trim(), model: settings.model.trim(), timeout: Number(settings.timeout), max_audio_seconds: Number(settings.max_audio_seconds ?? 3600) } } })
+      setConnections(v); setSettings(v.connections[editing])
+      setSaved(v.active === editing ? 'Settings saved. New transcription plans use them; normal retries retain their saved settings. Use Retry with current settings to replan unfinished audio.' : 'Connection saved. Your active connection is unchanged. Select Use this connection to switch.')
     } catch (e) { setError(errorText(e)) }
     finally { setSaving(false) }
   }
+  const activate = async () => {
+    setSaving(true); setError(''); setSaved('')
+    try {
+      const v = await rest('/connections/active', { method: 'POST', body: { provider: editing, revision: connections.revision } })
+      setConnections(v); setSettings(v.connections[editing])
+      setSaved('Active connection changed. Both saved connections are kept. Existing transcription plans and normal retries keep their original provider.')
+    } catch (e) { setError(errorText(e)) } finally { setSaving(false) }
+  }
   const set = key => e => { setSaved(''); setSettings({ ...settings, [key]: e.target.value }) }
+  const dirty = settings && JSON.stringify(settings) !== JSON.stringify(connections?.connections[editing])
   return h('div', { className: 'mn-page' },
     h('header', { className: 'mn-header' },
       h('h2', null, 'Transcription settings'),
-      h('p', { className: 'mn-muted' }, 'A NeMo-Speech.cpp server with speaker diarization and word timestamps. These settings apply to every meeting on this host.')),
+      h('p', { className: 'mn-muted' }, 'Keep separate Custom and xAI connections. Only the selected connection is used for new transcription plans.')),
     h(DeletionCleanup, { rest }),
     !settings && !error && h('div', { className: 'mn-card', 'aria-busy': true }, h('p', { className: 'mn-faint' }, 'Loading settings…')),
     settings && h('form', { className: 'mn-card', onSubmit: save, 'aria-label': 'Transcription settings' },
+      h('p', { className: 'mn-muted' }, `Active connection: ${connections.active === 'custom' ? 'Custom · NeMo-Speech.cpp' : 'xAI · Hermes OAuth'}`),
+      h(Field, { label: 'Connection to configure', hint: 'Choose a saved connection. Save changes before leaving this form; selecting a form does not change the active provider.' },
+        h('select', { className: 'mn-input', value: editing, disabled: saving, onChange: e => {
+          const name = e.target.value
+          setEditing(name); setSettings(connections.connections[name]); setSaved(''); setError('')
+        } }, h('option', { value: 'custom' }, 'Custom · NeMo-Speech.cpp'), h('option', { value: 'xai' }, 'xAI · existing Hermes OAuth (optional)'))),
+      editing === 'xai' && h(Callout, { tone: 'info' }, `${connections.availability?.xai?.message || 'Host support is unavailable.'} Sign in to xAI through Hermes on the importing backend profile. Audio is sent to xAI; subscription coverage is not guaranteed. No API-key fallback is used. Your custom connection is kept.`),
       h(Field, { label: 'Server endpoint', hint: 'HTTP(S) base URL, without credentials. Use plain HTTP only on a trusted network.' },
-        h('input', { className: 'mn-input', type: 'url', value: settings.endpoint, onChange: set('endpoint'), required: true, disabled: saving })),
+        h('input', { className: 'mn-input', type: 'url', value: settings.endpoint, onChange: set('endpoint'), required: true, disabled: saving || editing === 'xai' })),
       h('div', { className: 'mn-grid2' },
         h(Field, { label: 'Model' }, h('input', { className: 'mn-input', value: settings.model, onChange: set('model'), required: true, disabled: saving })),
         h(Field, { label: 'Request timeout (seconds)', hint: '30 to 7200.' },
           h('input', { className: 'mn-input', type: 'number', min: 30, max: 7200, step: 1, value: settings.timeout, onChange: set('timeout'), required: true, disabled: saving })),
-        h(Field, { label: 'Maximum audio per request (minutes)', hint: 'Nemotron 3.5 supports up to 60 minutes. Set a lower limit if your server requires it. This is audio length, not request timeout.' },
+        h(Field, { label: 'Maximum audio per request (minutes)', hint: 'Set this within your provider’s audio limit. This is audio length, not request timeout.' },
           h('input', { className: 'mn-input', type: 'number', min: 1 / 60, max: 1440, step: 'any', value: (settings.max_audio_seconds ?? 3600) / 60,
             onChange: e => { setSaved(''); setSettings({ ...settings, max_audio_seconds: Math.round(Number(e.target.value) * 60) }) }, required: true, disabled: saving }))),
       h('p', { className: 'mn-muted' }, 'Long recordings are cut at time boundaries, transcribed sequentially, and assembled into one meeting. Review speech near cut points and merge matching speakers across chunks. The original recording stays intact.'),
-      h('div', { className: 'mn-row' }, h(Button, { type: 'submit', size: 'sm', disabled: saving }, saving ? 'Saving…' : 'Save settings')),
+      h('div', { className: 'mn-row' }, h(Button, { type: 'submit', size: 'sm', disabled: saving }, saving ? 'Saving…' : 'Save settings'),
+        connections.active !== editing && btn({ disabled: saving || dirty || connections.availability?.[editing]?.available !== true, onClick: activate }, 'Use this connection')),
+      dirty && h('p', { className: 'mn-faint' }, 'Save changes before switching the active connection.'),
       h('p', { role: 'status', 'aria-live': 'polite', className: 'mn-muted' }, saved)),
     error && h(Callout, { tone: 'error', role: 'alert' }, error),
     h(StorageSettings, { rest }),
     h(Callout, { tone: 'info', title: 'Host requirements' },
       h('ul', { className: 'mn-steps' },
-        h('li', null, 'Set the API key as MEETING_NOTES_ASR_KEY in Hermes secrets. It is read on the host and never sent to this page.'),
+        h('li', null, 'Custom uses MEETING_NOTES_ASR_KEY in Hermes secrets. Optional xAI uses the existing Hermes sign-in on the importing host, not the meeting’s analysis profile. Credentials never reach this page.'),
+        h('li', null, 'OpenAI / ChatGPT OAuth diarized file transcription is not yet verified. Existing OAuth models can still generate notes in Hermes chat.'),
         h('li', null, 'ffmpeg and ffprobe must be installed on the Hermes host; optional archives need FLAC and libopus support.'),
         h('li', null, 'Use a single-profile host. Run one host per transcription server for now.'))))
 }

@@ -8,7 +8,7 @@ Early implementation of an import → diarized transcript → corrected speakers
 
 - Reviewed meeting deletion with combined-recording dependency checks, durable managed-file cleanup and preserved external items.
 - Durable SQLite metadata, 8 MiB hashed multipart chunks, duplicate-chunk conflict detection and idempotent finalize.
-- Configurable NeMo-Speech.cpp endpoint/model/timeout. Only this adapter is supported.
+- Separate saved Custom (NeMo-Speech.cpp) and optional xAI OAuth transcription connections, each with its own model, timeout and chunk limit. xAI requires the experimental host API extension described below.
 - Configurable host audio directory, explicit migration of existing recordings, lossless FLAC playback compression, and opt-in smaller Opus recording archives with verified replacement and durable recovery.
 - Configurable maximum audio duration per ASR request (60 minutes by default). Longer recordings are split into bounded requests and assembled into one meeting with full-recording timestamps. Successful chunks are retained across explicit retries.
 - Backend-only authenticated transcription, local attempts, heartbeat/lease fencing, immutable response files saved before parsing, and explicit retry after unknown outcomes.
@@ -37,6 +37,18 @@ hermes plugins validate . --install-deps
 Install this package using Hermes' supported plugin installation flow, enable the Python plugin and opt into its Desktop half. The Webapp must load the desktop plugin on its serving host. See [Hermes' unified package documentation](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk#one-package-both-sdks). The unified package was loaded by the remote Webapp host; browser tests preselect its persisted enabled preference. Native installation and the interactive toggle flow remain untested.
 
 Configure `MEETING_NOTES_ASR_KEY` through Hermes secret configuration. The plugin reads it exclusively through `agent.secret_scope.get_secret`; never put it in source, the settings API, or the browser. Endpoint, model and timeout are editable in the prototype UI. The default endpoint is the development LAN server; other users must configure their own reachable NeMo-Speech.cpp server. Plain HTTP is intended only for a trusted LAN; use TLS otherwise.
+
+### Optional xAI transcription
+
+In **Transcription settings**, choose **Connection to configure → xAI**. **Save settings** saves that connection without selecting it. **Use this connection** selects it for new transcription plans. Choose Custom and use it again to restore the saved NeMo endpoint, model, timeout and duration limit. Editing/saving either connection preserves the other. Unsaved form edits must be saved before leaving the form. Custom remains the default, and requires no xAI account.
+
+xAI uses the existing Hermes OAuth sign-in on the **importing backend profile**, not the browser's machine or the meeting's analysis profile. Sign in through Hermes's provider UI first. The plugin declares optional use of that sign-in in its manifest, but never reads tokens or auth files, refreshes credentials itself, or sends credentials to the browser. There is no API-key or alternate-provider fallback. Audio goes to `https://api.x.ai/v1/stt`, with `diarize=true` and the selected model (default `grok-voice-transcribe-2.0`). Raw responses are retained before word timestamps and speaker labels are validated. Authentication does not establish subscription entitlement or included usage; live xAI acceptance is still pending.
+
+**Host dependency:** stock Hermes inspected for this implementation lacks xAI and multipart support in its public `credentialed_provider_request` API. This repository provides a pinned **test-host API extension**, applied at image build time in [deploy/hermes-test](deploy/hermes-test/README.md). It is not an upstream release or a plugin runtime override. On unextended hosts, xAI settings can be saved but activation is unavailable; Custom continues to work. The extension keeps token resolution and HTTP authentication in Hermes. Distribution of xAI support to ordinary installs requires an upstream equivalent or an explicitly extended host.
+
+Existing transcription plans and ordinary retries keep their saved provider/model/settings. Selecting a connection applies when a new plan is first prepared, including queued recordings without a plan. **Retry with current settings** is explicit; once any chunks complete, changing their adapter or model is refused. Missing login and HTTP/timeout failures never silently switch connections or automatically resend audio.
+
+OpenAI/ChatGPT OAuth remains available for notes and action generation through normal Hermes chat. Diarized file transcription under that sign-in has not been verified and is not offered as a transcription connection.
 
 ## Lifecycle and current limits
 

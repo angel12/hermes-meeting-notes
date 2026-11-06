@@ -1,5 +1,63 @@
-"""The verified NeMo-Speech.cpp v0.2.0 contract, not a generic OpenAI adapter."""
+"""Explicit transcription contracts. OAuth requests are sent by the host."""
 import httpx
+
+from .connections import XAI_ENDPOINT
+
+
+class SetupError(ValueError):
+    """Safe, fixed setup error text; never contains provider exception details."""
+
+
+def xai_host_status():
+    try:
+        from hermes_cli.plugin_provider_requests import provider_request_capabilities
+        capabilities = provider_request_capabilities()
+        ready = capabilities.get('multipart') is True and 'xai-oauth' in capabilities.get('providers', [])
+    except (ImportError, AttributeError):
+        ready = False
+    return dict(available=ready, message=(
+        'Uses the importing host profile’s Hermes xAI login. STT subscription access still needs verification.' if ready else
+        'This Hermes host needs the OAuth multipart request extension before xAI can be selected. Custom remains available.'))
+
+
+def require_xai_host():
+    status = xai_host_status()
+    if not status['available']:
+        raise SetupError(status['message'])
+
+
+class XaiOAuth:
+    def __init__(self, settings, check_owner):
+        self.settings, self.check_owner = settings, check_owner
+
+    def probe(self):
+        self.check_owner()
+        require_xai_host()
+        if self.settings['endpoint'] != XAI_ENDPOINT:
+            raise SetupError('xAI OAuth requires https://api.x.ai/v1; custom endpoints are not allowed.')
+
+    def transcribe(self, path):
+        self.probe()
+        from hermes_cli.plugin_provider_requests import credentialed_provider_request, ProviderNotSignedIn
+        try:
+            with path.open('rb') as audio:
+                response = credentialed_provider_request('xai-oauth', 'POST', XAI_ENDPOINT+'/stt',
+                    data={'model':self.settings['model'], 'diarize':'true'},
+                    files={'file':('meeting.wav',audio,'audio/wav')}, timeout=self.settings['timeout'])
+            return response.status, response.body
+        except ProviderNotSignedIn:
+            raise SetupError('Sign in to xAI in the importing Hermes host profile, then Retry. No audio request was sent; API-key fallback is disabled.') from None
+
+
+def canonical_response(raw, adapter):
+    if adapter == 'nemo_speech_cpp':
+        return raw
+    if adapter != 'xai_oauth':
+        raise ValueError('Unsupported transcription adapter')
+    words = raw.get('words')
+    if not isinstance(words,list) or any(not isinstance(w,dict) or type(w.get('speaker')) is not int for w in words):
+        raise ValueError('xAI must return timestamped words with integer speaker labels')
+    return {**raw,'words':[{**w,'word':w.get('text')} for w in words]}
 
 
 class NemoSpeechCpp:

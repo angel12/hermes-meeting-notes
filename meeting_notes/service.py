@@ -3,7 +3,6 @@ import json
 import math
 import time
 from datetime import datetime
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .store import Store, atomic_write, uid
@@ -22,25 +21,19 @@ class Service(Store):
         return audio_window(self, meeting, start, duration)
 
     def configure(self, settings):
-        if set(settings) not in ({'endpoint','model','timeout'},{'endpoint','model','timeout','max_audio_seconds'}):
-            raise ValueError('Expected endpoint, model, timeout and max_audio_seconds; key belongs in Hermes secrets')
-        settings = {**settings,'max_audio_seconds':settings.get('max_audio_seconds',self.settings()['max_audio_seconds'])}
-        if type(settings['max_audio_seconds']) is not int or not 1 <= settings['max_audio_seconds'] <= 86400:
-            raise ValueError('Maximum audio per request must be 1–86400 seconds')
-        url = urlsplit(settings['endpoint'])
-        if url.scheme not in ('http','https') or not url.hostname or url.username or url.password or url.query or url.fragment:
-            raise ValueError('Endpoint must be HTTP(S) without embedded credentials or query')
-        if not isinstance(settings['model'],str) or not settings['model'].strip():
-            raise ValueError('Model is required')
-        if isinstance(settings['timeout'],bool) or not isinstance(settings['timeout'],int) or not 30 <= settings['timeout'] <= 7200:
-            raise ValueError('Timeout must be 30–7200 seconds')
-        settings['endpoint'] = settings['endpoint'].rstrip('/')
+        # Compatibility API: edit the selected connection, never reset its peer.
+        from .connections import read, write, validate, require_idle, effective, ADAPTERS
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight')").fetchone():
-                raise ValueError('Wait for current transcription before changing endpoint')
-            db.execute('INSERT OR REPLACE INTO settings VALUES(1,?)',(json.dumps(settings),))
-        return settings
+            state = read(db)
+            name = state['active']
+            value = dict(settings)
+            if 'adapter' in value and value.pop('adapter') != ADAPTERS[name]:
+                raise ValueError('Select the connection before changing its adapter')
+            require_idle(db)
+            state['connections'][name] = validate(name, value, state['connections'][name])
+            write(db, state)
+            return effective(state)
 
     def begin_upload(self, size, title, date, timezone):
         from . import storage

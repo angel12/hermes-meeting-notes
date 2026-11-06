@@ -2,3 +2,5 @@
 !Dockerfile
 !idle-callback-compat.js
 !install-compat.py
+!provider-requests.patch
+!install-provider-requests.py

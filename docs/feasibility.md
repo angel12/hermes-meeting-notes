@@ -2,6 +2,37 @@
 
 This records observed results, not acceptance of the finished product.
 
+## Optional transcription connections and host OAuth — initial spike, 2026-11-06
+
+The user requested reuse of existing Hermes xAI and OpenAI OAuth sign-ins for transcription. xAI must be an **optional, separately saved connection**: selecting it must retain the custom NeMo-Speech.cpp endpoint, model, timeout and duration limit. Selecting custom again restores those values. The default remains custom. The importing host owns transcription credentials; the meeting's analysis-profile selection does not select an ASR credential. Authentication failures must not silently switch providers or fall back to API-key billing.
+
+The feasibility spike found a host API dependency. No OAuth transcription option has been shipped:
+
+- The installed core and test container have `tools.xai_http.resolve_xai_http_credentials`. Core STT uses it, but plugin validation flags it as a private core import. Catalog credential rules require plugins to use core-made requests, without receiving the token. The exploratory wiring was removed after validation identified this boundary.
+- The supported interface is `hermes_cli.plugin_provider_requests.credentialed_provider_request`, with declared `requires_auth`. It supports `openai-codex` and plugin-owned OAuth declarations, but not the existing `xai-oauth` login. Its public signature takes JSON and headers, not multipart data/files. The test container has the public module; that does not establish the missing capabilities.
+- The public OpenAI broker also documents Realtime client-secret requests. “OpenAI OAuth only supports Responses” is therefore too broad. Subscription access to **file transcription with diarization** remains unverified; chat or Realtime authentication does not establish it.
+- xAI documents `POST /v1/stt`, multipart options before `file`, `diarize=true`, and word `text/start/end/speaker` fields. Its contract is suitable for an adapter once the public host request path exists. Subscription entitlement/billing still needs live acceptance.
+
+### Prepared upstream request: xAI OAuth and multipart provider requests
+
+Extend `credentialed_provider_request` so an installed plugin can upload audio using its importing profile's existing `xai-oauth` login without receiving tokens or implementing refresh. Use the existing `requires_auth` consent mechanism; sign-in should be necessary only when that optional connection is selected. The custom provider must continue working without an xAI account.
+
+Concrete request: multipart `POST https://api.x.ai/v1/stt` with `model`, `diarize=true`, and a backend file stream. Core should support multipart fields/files, send fields before the file, restrict provider origins, protect auth headers and return raw response bytes without credential-bearing exception objects. Preserve host refresh/profile binding. Do not automatically retry uncertain uploads, follow redirects, or fall back to API-key billing. Provide a public capability check to distinguish an unsupported host from a missing login without private registry/auth-file inspection or an audio submission.
+
+Required host tests: declared/undeclared caller; optional login; profile isolation; token refresh; origin and API-key fallback rejection; redirects; multipart order/streaming; no credential leakage; one submission after timeout. Plugin tests must cover custom → xAI → custom retaining both configurations, unchanged in-progress job snapshots, raw-response persistence before parsing, and rejection of missing diarization.
+
+This is a prepared request, not a submitted issue/PR or an implemented host API. No OAuth login, provider inference, host patch or deployment occurred in the spike. The working custom-provider runtime is unchanged.
+
+Sources: [Hermes provider requests](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins#use-the-users-codex-sign-in-core-made-requests), [catalog credential rules](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission), [xAI STT](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text), [OpenAI ChatGPT-plan Responses integration](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server). Host code and validation were inspected locally; provider documentation was fetched on the web.
+
+### Implementation after authorization to build
+
+The plugin now stores Custom and optional xAI configurations separately, with an explicit active connection and revision-checked saves/selections. Legacy settings migrate lazily without discarding the custom configuration, which is also retained in the legacy row for rollback. Shared Desktop/Webapp settings separates editing/saving from activation. Switching preserves both saved configurations; existing plans keep their provider snapshots. Retry cannot mix adapters/models after completed chunks. Custom remains usable without xAI credentials or an extended host.
+
+The xAI adapter calls only the public host credentialed-request module, never the internal credential resolver. A pinned build-time patch under `deploy/hermes-test` adds xAI OAuth and multipart support to that host interface, plus a credential-free capability function. It preserves installed-plugin declaration checks, pins provider origins, refuses API-key fallback and credential-bearing URL/header overrides, disables redirects/proxy environment routing and automatic upload retries, and sanitizes authentication/transport failures. This is an explicitly extended test image, not released upstream support. The default provider is not changed by deployment.
+
+Synthetic tests cover configuration preservation, stale revisions, active-work exclusion, worker profile checks, multipart requests, actual speaker/timestamp validation, immutable raw bytes, interrupted chunk recovery and host authorization boundaries. Tests apply the patch to a temporary copy of the pinned host module and use real core manifest/caller admission with fake credentials and HTTP transport. No real provider requests, real auth-store reads, or live OAuth acceptance have occurred. Opus review and test deployment are pending; stock-host xAI activation remains unavailable until the API extension exists there.
+
 **Current analysis path:** the bundled `meeting_notes:analyze` skill reads transcript pages into the normal Hermes session and saves the agent’s notes with `meeting_save_notes`. The nested `meeting_analyze`/`ctx.llm` implementation described in earlier chronological entries below has been removed.
 
 ## Verified in this implementation

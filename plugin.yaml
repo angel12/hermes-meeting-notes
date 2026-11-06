@@ -3,6 +3,8 @@ version: "0.1.0"
 description: "Import meeting audio, review speakers, generate sourced notes, and hand action items to Hermes with reported outcomes. Early implementation."
 author: "Hermes Meeting Notes contributors"
 requires_hermes: ">=0.22.6"
+requires_auth:
+  - xai-oauth
 provides_tools:
   - meeting_transcript
   - meeting_save_notes

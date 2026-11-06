@@ -1,7 +1,7 @@
 name: hermes-meeting-notes-test
 services:
   webapp:
-    image: hermes-meeting-notes-test:idle-compat-v1
+    image: hermes-meeting-notes-test:oauth-stt-v1
     build:
       context: .
       args:

@@ -29,8 +29,8 @@ def call(fn):
 
 @router.get('/ping')
 def ping():
-    runtime.service()
-    return {'ok':True,'adapter':'nemo_speech_cpp','analysis':'session_skill','profile_mode':'single'}
+    svc = runtime.service()
+    return {'ok':True,'adapter':svc.settings()['adapter'],'analysis':'session_skill','profile_mode':'single'}
 
 
 @router.get('/settings')
@@ -81,6 +81,32 @@ def analysis_profile(ident: str, body: dict):
 @router.put('/settings')
 def configure(body: dict):
     return call(lambda:runtime.service().configure(body))
+
+
+def connection_view(state):
+    from meeting_notes.asr import xai_host_status
+    return {**state, 'availability': {'custom': {'available': True}, 'xai': xai_host_status()}}
+
+
+@router.get('/connections')
+def transcription_connections():
+    return call(lambda:connection_view(runtime.service().connections()))
+
+
+@router.put('/connections/{name}')
+def save_connection(name: str, body: dict):
+    from meeting_notes.connections import save
+    if set(body) != {'settings','revision'}:
+        raise HTTPException(400,'Expected settings and revision; credentials belong in Hermes')
+    return call(lambda:connection_view(save(runtime.service(),name,body['settings'],body['revision'])))
+
+
+@router.post('/connections/active')
+def select_connection(body: dict):
+    from meeting_notes.connections import select
+    if set(body) != {'provider','revision'} or not isinstance(body['provider'], str):
+        raise HTTPException(400,'Expected provider and revision')
+    return call(lambda:connection_view(select(runtime.service(),body['provider'],body['revision'])))
 
 
 @router.get('/meetings')
