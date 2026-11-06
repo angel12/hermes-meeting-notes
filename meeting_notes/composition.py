@@ -95,40 +95,42 @@ def combine(svc, request_id, title, date, timezone, sources):
 
 
 def audio_window(svc, meeting, start, duration):
-    # Serialize file pointer reads with verified migration cleanup.
-    with svc.db() as db:
-        db.execute('BEGIN IMMEDIATE')
-        return _audio_window(svc, db, meeting, start, duration)
-
-
-def _audio_window(svc, db, meeting, start, duration):
-    from .audio import window
+    from contextlib import ExitStack
     if (any(isinstance(v,bool) or not isinstance(v,(float,int)) or not math.isfinite(v) for v in (start,duration))
             or start < 0 or not 0 < duration <= 30):
         raise ValueError('Playback windows must be 0–30 seconds')
     snapshot = svc.get(meeting)
-    parts = snapshot['recordings']
-    if not parts:
-        path = storage.playback_path(svc, db, meeting)
-        if not path.exists():
-            raise ValueError('Audio is not prepared yet')
-        return window(path,start,duration)
     begin, end = int(start*16000), int(start*16000)+int(duration*16000)
-    output = io.BytesIO()
-    with wave.open(output,'wb') as dst:
-        dst.setparams((1,2,16000,0,'NONE','not compressed'))
-        offset = 0
-        for part in parts:
-            count = part['frames']
-            left, right = max(begin,offset), min(end,offset+count)
-            if left < right:
-                path = storage.playback_path(svc, db, part['meeting_id'])
-                try:
-                    audio = audio_files.read_pcm(path, left-offset, right-left)
-                    if len(audio) != (right-left)*2:
-                        raise ValueError('A source recording has changed; playback is unavailable')
-                    dst.writeframes(audio)
-                except (OSError, wave.Error, EOFError):
-                    raise ValueError('A source recording is unavailable') from None
-            offset += count
+    with ExitStack() as files:
+        reads = []
+        # Open stable file handles under the short cleanup lock. POSIX unlink
+        # cannot invalidate these readers; ffmpeg decoding happens after release.
+        with svc.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            parts = snapshot['recordings']
+            if not parts:
+                path = storage.playback_path(svc, db, meeting)
+                asset = db.execute('SELECT frames FROM audio_assets WHERE meeting=?', (meeting,)).fetchone()
+                count = asset[0] if asset else audio_files.pcm_info(path)
+                parts = [{'meeting_id': meeting, 'frames': count}]
+            offset = 0
+            for part in parts:
+                count = part['frames']
+                left, right = max(begin, offset), min(end, offset+count)
+                if left < right:
+                    path = storage.playback_path(svc, db, part['meeting_id'])
+                    try:
+                        file = files.enter_context(path.open('rb'))
+                    except OSError:
+                        raise ValueError('A source recording is unavailable') from None
+                    reads.append((file, path.suffix, left-offset, right-left))
+                offset += count
+        output = io.BytesIO()
+        with wave.open(output, 'wb') as dst:
+            dst.setparams((1,2,16000,0,'NONE','not compressed'))
+            for file, codec, offset, count in reads:
+                data = audio_files.read_pcm(file, offset, count, codec)
+                if len(data) != count*2:
+                    raise ValueError('A source recording has changed; playback is unavailable')
+                dst.writeframes(data)
     return dict(mime='audio/wav',base64=base64.b64encode(output.getvalue()).decode(),start=start)

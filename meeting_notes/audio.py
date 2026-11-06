@@ -84,17 +84,33 @@ def pcm_info(path):
     return int(data['duration_ts'])
 
 
-def read_pcm(path, start_frame, frames):
+def read_pcm(path, start_frame, frames, codec=None):
     if frames <= 0:
         return b''
-    if Path(path).suffix == '.wav':
-        with wave.open(str(path), 'rb') as src:
+    opened = hasattr(path, 'read')
+    if opened:
+        path.seek(0)
+    if codec == '.wav' or (not opened and Path(path).suffix == '.wav'):
+        with wave.open(path if opened else str(path), 'rb') as src:
             src.setpos(min(start_frame, src.getnframes()))
             return src.readframes(frames)
     # Decode only the requested sample range. No lossy seeking or timestamp rounding.
-    return subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path), '-map', '0:a:0',
+    return subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', 'pipe:0' if opened else str(path), '-map', '0:a:0',
         '-af', f'atrim=start_sample={start_frame}:end_sample={start_frame + frames}',
-        '-f', 's16le', '-c:a', 'pcm_s16le', '-'], check=True, capture_output=True, timeout=60).stdout
+        '-f', 's16le', '-c:a', 'pcm_s16le', '-'], stdin=path if opened else None, check=True, capture_output=True, timeout=60).stdout
+
+
+class ArchiveInputError(ValueError):
+    pass
+
+
+def require_single_track(path):
+    import json
+    streams = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a',
+        '-show_entries', 'stream=index', '-of', 'json', str(path)],
+        check=True, capture_output=True, timeout=30).stdout)['streams']
+    if len(streams) != 1:
+        raise ArchiveInputError('Opus replacement requires exactly one audio track. Keep the uploaded original for multi-track recordings; lossless playback compression is still available.')
 
 
 def pcm_digest(path):

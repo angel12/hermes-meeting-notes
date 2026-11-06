@@ -45,7 +45,9 @@ def storage_settings():
 
 @router.put('/storage-settings')
 def configure_storage(body: dict):
-    return call(lambda:storage.configure(runtime.service(), body))
+    return call(lambda:storage.configure(runtime.service(),
+        {k: v for k, v in body.items() if k != 'acknowledge_lossy_replacement'},
+        body.get('acknowledge_lossy_replacement', False)))
 
 
 @router.get('/meetings/{ident}/storage')

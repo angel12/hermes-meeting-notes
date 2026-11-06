@@ -25,7 +25,7 @@ def recorded(tmp_path):
 
 
 def config(svc, directory='', compress=True, mode='original'):
-    return storage.configure(svc, {'directory': str(directory), 'compress_playback': compress, 'archive_mode': mode})
+    return storage.configure(svc, {'directory': str(directory), 'compress_playback': compress, 'archive_mode': mode}, acknowledge_lossy_replacement=(mode == 'opus'))
 
 
 def paths(svc, mid):
@@ -231,3 +231,122 @@ def test_apply_refuses_changed_policy_and_storage_waits_for_asr(recorded):
     storage.enqueue(svc, mid)
     assert storage.run_once(svc) is False
     assert storage.status(svc, mid)['job']['state'] == 'queued'
+
+
+@pytest.mark.parametrize('mode', ['original', 'opus'])
+def test_cloned_profile_cannot_modify_source_profile_audio(recorded, tmp_path, mode):
+    import shutil
+    svc, mid, original, pcm, _, worker = recorded
+    disk = tmp_path/'shared'; disk.mkdir(); config(svc, disk)
+    storage.enqueue(svc, mid); worker.run_once()
+    source_paths = paths(svc, mid)
+    hashes = [storage.digest(p) for p in source_paths]
+    # Also copy pending deletion work, as clone-all copies the whole plugin DB.
+    storage.enqueue(svc, mid)
+    clone_root = tmp_path/'cloned-profile'
+    shutil.copytree(svc.root, clone_root)
+    clone = Service(clone_root)
+    assert storage.settings(clone)['notice']
+    assert storage.settings(clone)['managed_path'] == str(clone_root)
+    storage.cleanup(clone)
+    assert not storage.run_once(clone)
+    config(clone, disk, mode=mode)
+    assert storage.settings(clone)['managed_path'] != storage.settings(svc)['managed_path']
+    storage.enqueue(clone, mid); storage.run_once(clone)
+    assert storage.status(clone, mid)['job']['state'] == 'failed'
+    assert all(p.exists() and storage.digest(p) == sha for p, sha in zip(source_paths, hashes))
+    assert source_paths[0].read_bytes() == original and clip(svc, mid, 0, 4) == pcm
+    with pytest.raises(ValueError): clone.audio_window(mid, 0, 1)
+    assert not storage.settings(Service(svc.root))['notice']
+
+
+def test_unbound_legacy_storage_is_not_adopted_after_database_copy(recorded, tmp_path):
+    import shutil
+    svc, mid, _, pcm, _, worker = recorded
+    disk = tmp_path/'shared'; disk.mkdir(); config(svc, disk)
+    storage.enqueue(svc, mid); worker.run_once()
+    with svc.db() as db: db.execute('DELETE FROM storage_identity')
+    clone_root = tmp_path/'clone'; shutil.copytree(svc.root, clone_root)
+    clone = Service(clone_root)
+    with pytest.raises(ValueError): storage.check_root(clone, paths(svc, mid)[0].parent.parent)
+    storage.cleanup(clone)
+    assert clip(svc, mid, 0, 4) == pcm
+
+
+def test_successful_upload_cleanup_is_not_revisited(recorded, monkeypatch):
+    svc, *_ = recorded
+    storage.cleanup(svc)
+    with svc.db() as db: assert db.execute('SELECT count(*) FROM chunks').fetchone()[0] == 0
+    monkeypatch.setattr(storage, 'upload_root', lambda *_: pytest.fail('Cleaned chunks must not be visited again'))
+    storage.cleanup(svc)
+
+
+def test_policy_revocation_cancels_automatic_archive_before_start(tmp_path):
+    svc = Service(tmp_path); config(svc, mode='opus')
+    mid, original, _ = upload(svc, 64000); worker = Worker(svc, lambda _: Recognizer()); worker.run_once()
+    previous = paths(svc, mid)
+    config(svc, compress=False)
+    worker.run_once()
+    assert storage.status(svc, mid)['job']['state'] == 'cancelled'
+    assert paths(svc, mid) == previous and previous[0].read_bytes() == original
+
+
+def test_policy_revocation_during_automatic_archive_keeps_original(tmp_path, monkeypatch):
+    svc = Service(tmp_path); config(svc, mode='opus')
+    mid, original, _ = upload(svc, 64000); worker = Worker(svc, lambda _: Recognizer()); worker.run_once()
+    previous = paths(svc, mid); encode = audio.encode_archive
+    def change_policy(*args):
+        encode(*args); config(svc, compress=False)
+    monkeypatch.setattr(audio, 'encode_archive', change_policy)
+    worker.run_once()
+    assert storage.status(svc, mid)['job']['state'] == 'cancelled'
+    assert paths(svc, mid) == previous and previous[0].read_bytes() == original
+
+
+def test_saving_again_does_not_recreate_missing_or_wrong_device_storage(tmp_path):
+    svc = Service(tmp_path/'profile'); disk = tmp_path/'mount'; disk.mkdir()
+    value = config(svc, disk); root = Path(value['managed_path'])
+    moved = root.with_name('unmounted'); root.rename(moved)
+    with pytest.raises(ValueError): config(svc, disk)
+    assert not root.exists()
+    moved.rename(root)
+    with svc.db() as db: db.execute('UPDATE storage_devices SET device=device+1')
+    with pytest.raises(ValueError, match='device changed'): config(svc, disk)
+
+
+def test_lossy_replacement_requires_auditable_server_acknowledgement(tmp_path):
+    svc = Service(tmp_path)
+    value = {**storage.DEFAULTS, 'archive_mode': 'opus'}
+    with pytest.raises(ValueError, match='acknowledge'): storage.configure(svc, value)
+    assert storage.settings(svc)['archive_mode'] == 'original'
+    storage.configure(svc, value, acknowledge_lossy_replacement=True)
+    with svc.db() as db:
+        assert json.loads(db.execute('SELECT settings FROM storage_consent').fetchone()[0])['archive_mode'] == 'opus'
+
+
+def test_playback_releases_lock_and_open_files_survive_migration_cleanup(recorded, monkeypatch):
+    svc, mid, _, pcm, _, worker = recorded
+    config(svc); storage.enqueue(svc, mid); worker.run_once()
+    old_paths = paths(svc, mid); read = audio.read_pcm
+    def migrate_while_reading(file, start, count, codec=None):
+        # Would deadlock/time out if playback retained its SQLite write lock.
+        storage.enqueue(svc, mid); storage.run_once(svc)
+        assert not old_paths[1].exists()
+        return read(file, start, count, codec)
+    monkeypatch.setattr(audio, 'read_pcm', migrate_while_reading)
+    assert clip(svc, mid, .125, 1) == pcm[2000*2:18000*2]
+
+
+def test_opus_refuses_multiple_audio_tracks_without_losing_original(recorded, monkeypatch):
+    svc, mid, original, _, _, worker = recorded
+    previous = paths(svc, mid); real = audio.subprocess.run
+    def multiple_tracks(args, **kwargs):
+        if args[0] == 'ffprobe' and 'stream=index' in args:
+            from subprocess import CompletedProcess
+            return CompletedProcess(args, 0, stdout=b'{"streams":[{"index":0},{"index":1}]}')
+        return real(args, **kwargs)
+    monkeypatch.setattr(audio.subprocess, 'run', multiple_tracks)
+    config(svc, mode='opus'); storage.enqueue(svc, mid); worker.run_once()
+    assert storage.status(svc, mid)['job']['state'] == 'failed'
+    assert 'multi-track' in storage.status(svc, mid)['job']['error']
+    assert paths(svc, mid) == previous and previous[0].read_bytes() == original

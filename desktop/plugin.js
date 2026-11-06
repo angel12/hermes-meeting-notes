@@ -536,7 +536,7 @@ export function StorageSettings({ rest }) {
   const save = async e => {
     e.preventDefault(); setSaving(true); setError(''); setMessage('')
     try {
-      const v = await rest('/storage-settings', { method: 'PUT', body: { directory: value.directory.trim(), compress_playback: value.compress_playback, archive_mode: value.archive_mode } })
+      const v = await rest('/storage-settings', { method: 'PUT', body: { directory: value.directory.trim(), compress_playback: value.compress_playback, archive_mode: value.archive_mode, acknowledge_lossy_replacement: confirmed } })
       setValue(v); setConfirmed(false)
       setMessage('Storage settings saved. New uploads use this location. Compression runs after future transcriptions finish. Existing recordings change only when you apply these settings in their Audio storage panel.')
     } catch (e) { setError(errorText(e)) } finally { setSaving(false) }
@@ -544,6 +544,7 @@ export function StorageSettings({ rest }) {
   return h('section', { className: 'mn-card', 'aria-label': 'Audio storage settings' },
     h('h3', null, 'Audio storage'),
     h('p', { className: 'mn-muted' }, 'Choose a directory on the Hermes backend machine. In Webapp this is the server, not your browser’s computer. Docker must have the directory mounted. Notes and the database stay in the importing profile.'),
+    value?.notice && h(Callout, { tone: 'warn' }, value.notice),
     value && h('form', { onSubmit: save },
       h(Field, { label: 'Audio directory on Hermes host', hint: 'Existing absolute path. Leave blank to use profile storage. Each profile gets a separate managed subfolder.' },
         h('input', { className: 'mn-input', value: value.directory, disabled: saving, onChange: e => { setMessage(''); setValue({ ...value, directory: e.target.value }) } })),

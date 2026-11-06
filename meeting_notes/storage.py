@@ -24,7 +24,8 @@ def settings(svc, db=None):
     row = db.execute('SELECT namespace,data FROM storage_settings WHERE id=1').fetchone()
     value = {**DEFAULTS, **json.loads(row['data'])}
     root = Path(value['directory'])/('hermes-meeting-notes-'+row['namespace']) if value['directory'] else svc.root
-    return {**value, 'managed_path': str(root)}
+    notice = db.execute('SELECT notice FROM storage_identity WHERE id=1').fetchone()[0]
+    return {**value, 'managed_path': str(root), 'notice': notice}
 
 
 def check_root(svc, root):
@@ -34,9 +35,12 @@ def check_root(svc, root):
     with svc.db() as db:
         namespace = db.execute('SELECT namespace FROM storage_settings').fetchone()[0]
         known = db.execute('SELECT 1 FROM storage_locations WHERE path=?', (str(root),)).fetchone()
+        device = db.execute('SELECT device FROM storage_devices WHERE path=?', (str(root),)).fetchone()
     if not known or root.is_symlink() or not root.is_dir() or (root/'.meeting-notes-owner').is_symlink():
         raise ValueError('Audio storage is unavailable; reconnect its disk or mount')
     try:
+        if not device or root.stat().st_dev != device[0]:
+            raise ValueError('Audio storage device changed; reconnect the original disk or choose a new directory')
         if (root/'.meeting-notes-owner').read_text() != namespace:
             raise ValueError('Audio storage belongs to another profile')
         for name in ('audio', 'uploads'):
@@ -47,7 +51,7 @@ def check_root(svc, root):
     return root
 
 
-def configure(svc, value):
+def configure(svc, value, acknowledge_lossy_replacement=False):
     if set(value) != set(DEFAULTS) or type(value['compress_playback']) is not bool or value['archive_mode'] not in ('original', 'opus'):
         raise ValueError('Expected directory, compress_playback and archive_mode (original or opus)')
     directory = value['directory']
@@ -55,6 +59,8 @@ def configure(svc, value):
         raise ValueError('Use an existing absolute directory on the Hermes host')
     value = dict(value)
     if value['archive_mode'] == 'opus':
+        if acknowledge_lossy_replacement is not True:
+            raise ValueError('Explicitly acknowledge lossy replacement of stored originals')
         value['compress_playback'] = True  # Preserve the exact canonical playback separately.
     if directory:
         base = Path(directory)
@@ -64,6 +70,10 @@ def configure(svc, value):
         with svc.db() as db:
             namespace = db.execute('SELECT namespace FROM storage_settings').fetchone()[0]
         root = base.resolve()/('hermes-meeting-notes-'+namespace)
+        with svc.db() as db:
+            known = db.execute('SELECT 1 FROM storage_locations WHERE path=?', (str(root),)).fetchone()
+        if known:
+            check_root(svc, root)  # Saving again cannot recreate an unmounted volume.
         if root.is_symlink():
             raise ValueError('Managed audio storage cannot be a symlink')
         try:
@@ -93,8 +103,11 @@ def configure(svc, value):
             raise ValueError('The Hermes host cannot write to the selected audio directory') from None
         with svc.db() as db:
             db.execute('INSERT OR IGNORE INTO storage_locations VALUES(?)', (str(root),))
+            db.execute('INSERT OR IGNORE INTO storage_devices VALUES(?,?)', (str(root), root.stat().st_dev))
     with svc.db() as db:
         db.execute('UPDATE storage_settings SET data=? WHERE id=1', (json.dumps(value),))
+        if value['archive_mode'] == 'opus':
+            db.execute('INSERT INTO storage_consent(created,settings) VALUES(?,?)', (time.time(), json.dumps(value)))
     return settings(svc)
 
 
@@ -160,6 +173,7 @@ def enqueue(svc, meeting, automatic=False, expected_settings=None, db=None):
     ident = uid()
     db.execute('INSERT INTO storage_jobs(id,meeting,settings,state,created) VALUES(?,?,?,?,?)',
                (ident, meeting, json.dumps(value), 'queued', time.time()))
+    db.execute('INSERT INTO storage_job_policy VALUES(?,?)', (ident, int(automatic)))
     return {'job_id': ident}
 
 def digest(path):
@@ -201,6 +215,7 @@ def cleanup(svc):
             try:
                 root = upload_root(svc, db, row['id'])
                 (root/'uploads'/f'{row["id"]}.{row["idx"]}').unlink(missing_ok=True)
+                db.execute('DELETE FROM chunks WHERE upload=? AND idx=?', (row['id'], row['idx']))
             except (OSError, ValueError):
                 pass
         for row in db.execute("SELECT id,cleanup FROM storage_jobs WHERE state='completed' AND cleanup!='[]'").fetchall():
@@ -232,6 +247,10 @@ def run_once(svc):
         if not row:
             return False
         job = dict(row)
+        policy = db.execute('SELECT automatic FROM storage_job_policy WHERE job=?', (job['id'],)).fetchone()
+        if policy and policy[0] and json.loads(job['settings']) != settings(svc, db):
+            db.execute("UPDATE storage_jobs SET state='cancelled',error='Automatic storage policy changed before work started; review and apply current settings explicitly.' WHERE id=?", (job['id'],))
+            return True
         db.execute("UPDATE storage_jobs SET state='running',owner=?,lease=?,error=NULL WHERE id=?", (owner, time.time()+LEASE, job['id']))
         source = Path(db.execute('SELECT audio FROM meetings WHERE id=?', (job['meeting'],)).fetchone()[0])
         asset = db.execute('SELECT * FROM audio_assets WHERE meeting=?', (job['meeting'],)).fetchone()
@@ -270,6 +289,7 @@ def run_once(svc):
         with svc.db() as db:
             db.executemany('INSERT INTO storage_outputs VALUES(?,?,?)', ((job['id'], owner, str(p)) for p in outputs))
         if value['archive_mode'] == 'opus' and not was_opus:
+            audio.require_single_track(source)
             audio.encode_archive(source, archive, 'opus'); audio.verify_opus(archive, frames)
         else:
             copy_verified(source, archive)
@@ -297,6 +317,9 @@ def run_once(svc):
             db.execute('BEGIN IMMEDIATE')
             if not fenced(db):
                 return True
+            if policy and policy[0] and value != settings(svc, db):
+                db.execute("UPDATE storage_jobs SET state='cancelled',lease=NULL,error='Automatic storage policy changed during preparation; the current recording was kept.' WHERE id=?", (job['id'],))
+                return True
             current = db.execute('SELECT audio FROM meetings WHERE id=?', (job['meeting'],)).fetchone()[0]
             if current != str(source) or playback_path(svc, db, job['meeting']) != playback:
                 raise ValueError('Recording changed while storage work was running')
@@ -308,12 +331,12 @@ def run_once(svc):
                             'archive_mode': value['archive_mode'], 'playback_format': prepared.suffix[1:]}), json.dumps(cleanup_files), job['id']))
         committed = True
         cleanup(svc)
-    except Exception:
+    except Exception as exc:
         with svc.db() as db:
             db.execute('BEGIN IMMEDIATE')
             if fenced(db):
                 db.execute("UPDATE storage_jobs SET state='failed',lease=NULL,error=? WHERE id=?", (
-                    'Storage change failed. Check available space, mounted folders and ffmpeg/ffprobe support. The current recording was kept; explicitly apply settings again to retry.', job['id']))
+                    str(exc) if isinstance(exc, audio.ArchiveInputError) else 'Storage change failed. Check available space, mounted folders and ffmpeg/ffprobe support. The current recording was kept; explicitly apply settings again to retry.', job['id']))
     finally:
         stop.set(); thread.join()
         if not committed:

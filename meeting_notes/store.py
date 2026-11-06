@@ -33,7 +33,7 @@ def atomic_write(path, data):
 
 class Store:
     def __init__(self, root):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
         for name in ('audio', 'raw', 'uploads'):
@@ -92,8 +92,25 @@ class Store:
                 cleanup TEXT NOT NULL DEFAULT '[]', created REAL NOT NULL);
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_storage_job ON storage_jobs(meeting) WHERE state IN ('queued','running');
             CREATE TABLE IF NOT EXISTS storage_outputs(job TEXT NOT NULL REFERENCES storage_jobs(id), owner TEXT NOT NULL, path TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS storage_identity(id INTEGER PRIMARY KEY CHECK(id=1), root TEXT NOT NULL, notice TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS storage_devices(path TEXT PRIMARY KEY, device INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS storage_job_policy(job TEXT PRIMARY KEY REFERENCES storage_jobs(id), automatic INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS storage_consent(id INTEGER PRIMARY KEY, created REAL NOT NULL, settings TEXT NOT NULL);
             ''')
             db.execute('INSERT OR IGNORE INTO storage_settings VALUES(1,?,?)', (uid(), '{}'))
+            identity = db.execute('SELECT root FROM storage_identity WHERE id=1').fetchone()
+            # A database clone is not a grant over its source profile's files.
+            # Legacy separate locations with no binding are also quarantined.
+            if ((identity and identity[0] != str(self.root)) or
+                    (not identity and db.execute('SELECT 1 FROM storage_locations').fetchone())):
+                db.execute('UPDATE storage_settings SET namespace=?,data=? WHERE id=1', (uid(), '{}'))
+                db.execute('DELETE FROM storage_locations')
+                db.execute('DELETE FROM storage_devices')
+                db.execute("UPDATE storage_jobs SET state='failed',lease=NULL,error='Profile storage identity changed; old audio locations are foreign. Configure storage for this profile.' WHERE state IN ('queued','running')")
+                db.execute('INSERT OR REPLACE INTO storage_identity VALUES(1,?,?)', (str(self.root),
+                    'This database was cloned, moved or has unbound legacy storage. Previous audio locations are foreign and will not be modified. Save a storage location for new recordings; existing file references require a separate restore.'))
+            else:
+                db.execute('INSERT OR IGNORE INTO storage_identity VALUES(1,?,?)', (str(self.root), ''))
 
     @contextlib.contextmanager
     def db(self):

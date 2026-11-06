@@ -571,7 +571,7 @@ test('storage settings explain host paths and require opt-in for original replac
   fireEvent.click(screen.getByLabelText('Allow replacement of stored originals after future transcriptions'))
   fireEvent.click(screen.getByRole('button', { name: 'Save storage settings' }))
   await waitFor(() => assert.equal(writes.length, 1))
-  assert.deepEqual(writes[0], { directory: '/mounted/recordings', compress_playback: true, archive_mode: 'opus' })
+  assert.deepEqual(writes[0], { directory: '/mounted/recordings', compress_playback: true, archive_mode: 'opus', acknowledge_lossy_replacement: true })
   assert.ok(await screen.findByText(/Existing recordings change only/))
 })
 

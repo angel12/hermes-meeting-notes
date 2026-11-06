@@ -19,4 +19,5 @@ services:
         format: raw
     volumes:
       - ./data:/opt/data
+      - ./audio:/opt/audio
     stop_grace_period: 30s
