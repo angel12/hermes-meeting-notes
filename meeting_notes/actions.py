@@ -74,6 +74,11 @@ def view(svc, meeting, *, short_source_ids=False):
                         ref['segment_id'] = aliases[ref['segment_id']]
             result['sources'] = {aliases[sid]: {**source, 'id': aliases[sid]}
                                  for sid, source in result['sources'].items()}
+            for source in result['sources'].values():
+                if 'source' in source:
+                    # Preserve recording/timing context without suggesting another
+                    # citation ID to copy into a current-transcript save.
+                    source['source'].pop('segment_id', None)
     return result
 
 

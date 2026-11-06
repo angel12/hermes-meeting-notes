@@ -8,6 +8,7 @@ from meeting_notes.service import Service
 from test_analysis import meeting
 from test_profiles import homes
 from test_api import client
+from test_composition import recordings, body
 
 
 def item(page, text='Send the notes.', action_type='task'):
@@ -290,6 +291,33 @@ def test_agent_source_aliases_preserve_storage_and_frozen_handoffs(proposal):
     wire = actions.view(svc, mid, short_source_ids=True)
     assert wire['needs_review'] and wire['items'][0]['citations'][0]['source_changed']
     assert wire['items'][0]['citations'][0]['segment_id'] == 's0'
+
+
+def test_combined_agent_sources_and_due_use_only_current_aliases(recordings):
+    svc, ids = recordings
+    mid = svc.combine(**body(svc, ids))['id']
+    empty = actions.view(svc, mid, short_source_ids=True)
+    assert empty['items'] == [] and empty['sources'] == {} and empty['actions_id'] is None
+    assert empty['sources_match_current_transcript']
+    page = read_transcript(svc, mid)
+    sid, _, quote = page['segments'][-1]
+    proposal = item(page)
+    proposal['citations'] = [{'segment_id': sid, 'quote': quote}]
+    proposal['owner']['segment_id'] = sid
+    proposal['due'] = {'segment_id': sid, 'quote': quote, 'proposed_date': None}
+    actions.save(svc, mid, page['basis'], None, [proposal])
+    stored = actions.view(svc, mid)
+    wire = actions.view(svc, mid, short_source_ids=True)
+    assert wire['items'][0]['due']['segment_id'] == sid
+    assert wire['items'][0]['owner']['segment_id'] == sid
+    assert wire['items'][0]['citations'][0]['segment_id'] == sid
+    source = wire['sources'][sid]
+    assert source['source']['part'] == 2
+    assert 'segment_id' not in source['source']
+    original = next(iter(stored['sources'].values()))
+    assert source['source'] == {k: v for k, v in original['source'].items() if k != 'segment_id'}
+    assert actions.view(svc, mid) == stored
+    assert 'segment_id' in next(iter(stored['sources'].values()))['source']
 
 
 def test_agent_never_relabels_historical_transcript_sources(proposal):
