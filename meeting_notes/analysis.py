@@ -1,5 +1,6 @@
 """Session transcript reads and validated notes persistence. No model calls."""
 import copy
+from collections import Counter
 from datetime import date, datetime
 import hashlib
 import json
@@ -33,6 +34,39 @@ BASIS_SCHEMA = obj({
     'analysis_id': {'type': ['string', 'null']},
 })
 PAGE_CHARS = 6000
+MAX_FAILURES = 8
+
+
+class NotesValidationError(ValueError):
+    """Bounded diagnostics containing locations and codes, never source text."""
+
+    def __init__(self, failures):
+        self.failures = failures[:MAX_FAILURES]
+        self.more_failures = max(0, len(failures) - MAX_FAILURES)
+        first = self.failures[0]
+        super().__init__(f"Notes validation failed at {first['path']} ({first['code']}); nothing was saved")
+
+    def as_dict(self):
+        return {'error': str(self), 'failures': self.failures,
+                'more_failures': self.more_failures}
+
+
+def check_schema(payload):
+    try:
+        Draft202012Validator(SCHEMA).validate(payload)
+    except ValidationError as exc:
+        # jsonschema.message can include submitted text. Only emit known field names.
+        fields = {'items', 'kind', 'text', 'citations', 'segment_id', 'quote',
+                  'owner', 'basis', 'name', 'due', 'proposed_date'}
+        path = ''
+        for part in exc.absolute_path:
+            if type(part) is int:
+                path += f'[{part}]'
+            elif part in fields:
+                path += ('.' if path else '') + part
+            else:
+                break
+        raise NotesValidationError([{'path': path or 'items', 'code': 'schema_mismatch'}]) from None
 
 
 def basis_for(snapshot):
@@ -46,7 +80,7 @@ def require_basis(snapshot, basis):
     except ValidationError:
         raise ValueError('Use the unchanged basis returned by meeting_transcript') from None
     if basis != basis_for(snapshot):
-        raise ValueError('Transcript or saved notes changed; reload the transcript before saving notes')
+        raise ValueError('Transcript or saved notes changed; restart meeting_transcript at offset 0 without a basis, review the current transcript, and rebuild the complete notes before saving')
 
 
 def read_transcript(svc, meeting_id, offset=0, basis=None):
@@ -90,24 +124,22 @@ def save_notes(svc, meeting_id, basis, items):
     require_basis(snapshot, basis)
     if not snapshot['active']:
         raise ValueError('A transcript is required before saving notes')
-    payload = {'items': items}
-    try:
-        Draft202012Validator(SCHEMA).validate(payload)
-    except ValidationError:
-        raise ValueError('Notes do not match the save schema; nothing was saved') from None
-    payload = copy.deepcopy(payload)
     aliases = {f's{i}': s['id'] for i, s in enumerate(snapshot['segments'])}
+    # Validate against short IDs first, so diagnostics match the session's sources.
+    # Store.save_analysis validates again against the real IDs before persistence.
+    short_snapshot = {'segments': [{**s, 'id': f's{i}'} for i, s in enumerate(snapshot['segments'])]}
+    payload = validate({'items': items}, short_snapshot)
     for item in payload['items']:
         for ref in [*item['citations'], item['owner'], item['due']]:
             sid = ref['segment_id']
             if sid is not None:
-                if sid not in aliases:
-                    raise ValueError('Unknown source ID; use IDs from meeting_transcript')
                 ref['segment_id'] = aliases[sid]
-    payload = validate(payload, snapshot)
     record = svc.save_analysis(snapshot, payload, origin='hermes_session')
     return {'status': 'saved', 'meeting_id': meeting_id, 'analysis_id': record['id'],
-            'revision': record['revision'], 'items_saved': len(record['items'])}
+            'revision': record['revision'], 'items_saved': len(record['items']),
+            'items_by_kind': dict(Counter(item['kind'] for item in record['items'])),
+            'basis': {'transcript_id': record['transcript'], 'revision': record['revision'],
+                      'analysis_id': record['id']}}
 
 
 def fingerprint(item):
@@ -117,48 +149,61 @@ def fingerprint(item):
 
 
 def validate(payload, snapshot):
-    try:
-        Draft202012Validator(SCHEMA).validate(payload)
-    except ValidationError:
-        raise ValueError('Notes did not match the notes schema; nothing was saved') from None
+    check_schema(payload)
     segments = {s['id']: s for s in snapshot['segments']}
+    short_ids = {s['id']: f's{i}' for i, s in enumerate(snapshot['segments'])}
     result = copy.deepcopy(payload)
     seen = set()
-    for item in result['items']:
+    failures = []
+
+    def fail(path, code, sid=None):
+        detail = {'path': path, 'code': code}
+        if sid in short_ids:
+            detail['source_id'] = short_ids[sid]
+        failures.append(detail)
+
+    for index, item in enumerate(result['items']):
+        path = f'items[{index}]'
         cited = {}
-        for citation in item['citations']:
+        for ci, citation in enumerate(item['citations']):
+            ref_path = f'{path}.citations[{ci}]'
             sid, quote = citation['segment_id'], citation['quote']
-            if sid not in segments or not quote.strip() or quote not in segments[sid]['text']:
-                raise ValueError('Notes cited missing or inexact evidence; nothing was saved')
+            if sid not in segments:
+                fail(ref_path + '.segment_id', 'unknown_source')
+            elif not quote.strip() or quote not in segments[sid]['text']:
+                fail(ref_path + '.quote', 'quote_not_in_segment', sid)
             if sid in cited:
-                raise ValueError('Notes repeated a source segment; nothing was saved')
+                fail(ref_path + '.segment_id', 'duplicate_source', sid)
             cited[sid] = quote
         owner, due = item['owner'], item['due']
         if owner['basis'] == 'unresolved':
             valid_owner = owner['segment_id'] is None and owner['name'] is None
         elif owner['basis'] == 'speaker':
-            valid_owner = owner['segment_id'] in cited and owner['name'] is None
+            valid_owner = owner['segment_id'] in segments and owner['segment_id'] in cited and owner['name'] is None
         else:
-            valid_owner = (owner['segment_id'] in cited and bool(owner['name']) and
+            valid_owner = (owner['segment_id'] in segments and owner['segment_id'] in cited and bool(owner['name']) and
                            owner['name'].strip() and owner['name'] in cited[owner['segment_id']])
         if not valid_owner or (item['kind'] != 'commitment' and owner['basis'] != 'unresolved'):
-            raise ValueError('Proposed owner lacks valid commitment evidence; nothing was saved')
+            fail(path + '.owner', 'invalid_owner_evidence', owner['segment_id'])
         if any(v is not None for v in due.values()):
-            if (item['kind'] != 'commitment' or due['segment_id'] not in cited or
+            if (item['kind'] != 'commitment' or due['segment_id'] not in segments or due['segment_id'] not in cited or
                     not due['quote'] or not due['quote'].strip() or
                     due['quote'] not in cited[due['segment_id']]):
-                raise ValueError('Proposed date lacks commitment evidence; nothing was saved')
+                fail(path + '.due', 'invalid_date_evidence', due['segment_id'])
             if due['proposed_date'] is not None:
                 try:
                     parsed = date.fromisoformat(due['proposed_date'])
                     if parsed.isoformat() != due['proposed_date']:
                         raise ValueError()
                 except ValueError:
-                    raise ValueError('Proposed date must be an ISO calendar date; nothing was saved') from None
+                    fail(path + '.due.proposed_date', 'invalid_calendar_date', due['segment_id'])
         key = fingerprint(item)
         if key in seen:
-            raise ValueError('Notes repeated an item; nothing was saved')
+            fail(path, 'duplicate_item')
         seen.add(key)
+    if failures:
+        raise NotesValidationError(failures)
+    for item in result['items']:
         item['id'] = uid()
     return result
 

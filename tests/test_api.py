@@ -103,3 +103,16 @@ def test_session_tools_work_without_llm_access(client):
         }]}))
     assert result['status']=='saved' and result['items_saved']==1
     assert svc.get(mid)['analysis']['origin']=='hermes_session'
+    saved_basis = result['basis']
+    rejected = json.loads(handlers['meeting_save_notes']({
+        'meeting_id': mid, 'basis': saved_basis, 'items': [{
+            'kind': 'summary', 'text': 'A synthetic claim.',
+            'citations': [{'segment_id': 's0', 'quote': 'Private wrong quote'}],
+            'owner': {'basis': 'unresolved', 'segment_id': None, 'name': None},
+            'due': {'segment_id': None, 'quote': None, 'proposed_date': None},
+        }]}))
+    assert rejected['failures'] == [{'path': 'items[0].citations[0].quote',
+                                     'code': 'quote_not_in_segment', 'source_id': 's0'}]
+    assert 'Private' not in json.dumps(rejected)
+    assert json.loads(handlers['meeting_transcript']({'meeting_id': mid}))['basis'] == saved_basis
+    assert len(svc.get(mid)['analysis_versions']) == 1

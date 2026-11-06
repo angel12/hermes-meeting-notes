@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from meeting_notes.analysis import read_transcript, save_notes, validate
+from meeting_notes.analysis import NotesValidationError, read_transcript, save_notes, validate
 from meeting_notes.service import Service
 from meeting_notes.worker import Worker
 from test_core import Adapter, imported
@@ -224,4 +224,113 @@ def test_short_ids_cannot_cross_transcript_versions(meeting):
         db.execute('INSERT INTO transcripts VALUES(?,?,?,?,?)',('new',mid,row['raw'],row['sha'],json.dumps(segments)))
         db.execute('UPDATE meetings SET active=? WHERE id=?',('new',mid))
     with pytest.raises(ValueError,match='changed'): save(svc,mid,data,page['basis'])
+
+
+def wire_item(page, text='Send it.'):
+    sid, _, quote = page['segments'][0]
+    return {'kind': 'commitment', 'text': text,
+            'citations': [{'segment_id': sid, 'quote': quote}],
+            'owner': {'basis': 'speaker', 'segment_id': sid, 'name': None},
+            'due': {'segment_id': None, 'quote': None, 'proposed_date': None}}
+
+
+def test_all_bad_quotes_reported_without_publishing_partial_notes(meeting):
+    svc, mid = meeting
+    page = read_transcript(svc, mid)
+    first = save_notes(svc, mid, page['basis'], [wire_item(page)])
+    items = [wire_item(page, 'First claim.'), wire_item(page, 'Second claim.')]
+    items[0]['citations'][0]['quote'] = 'Private incorrect quote'
+    items[1]['citations'][0]['quote'] = 'Another private incorrect quote'
+    with pytest.raises(NotesValidationError) as error:
+        save_notes(svc, mid, first['basis'], items)
+    result = error.value.as_dict()
+    assert result['failures'] == [
+        {'path': 'items[0].citations[0].quote', 'code': 'quote_not_in_segment', 'source_id': 's0'},
+        {'path': 'items[1].citations[0].quote', 'code': 'quote_not_in_segment', 'source_id': 's0'}]
+    assert result['more_failures'] == 0
+    assert 'nothing was saved' in result['error']
+    assert 'Private' not in json.dumps(result) and 'private' not in json.dumps(result)
+    assert read_transcript(svc, mid)['basis'] == first['basis']
+    assert len(svc.get(mid)['analysis_versions']) == 1
+    for item in items:
+        item['citations'][0]['quote'] = page['segments'][0][2]
+    complete = save_notes(svc, mid, first['basis'], items)
+    assert complete['items_saved'] == 2
+    assert complete['items_by_kind'] == {'commitment': 2}
+    assert complete['basis'] == read_transcript(svc, mid)['basis']
+    assert len(svc.get(mid)['analysis_versions']) == 2
+
+
+def test_diagnostics_are_bounded_and_never_echo_unknown_source_text(meeting):
+    svc, mid = meeting
+    page = read_transcript(svc, mid)
+    items = [wire_item(page, f'Claim {i}.') for i in range(12)]
+    for item in items:
+        item['owner'] = {'basis': 'unresolved', 'segment_id': None, 'name': None}
+        item['citations'][0]['segment_id'] = 'private value submitted as an ID'
+    with pytest.raises(NotesValidationError) as error:
+        save_notes(svc, mid, page['basis'], items)
+    result = error.value.as_dict()
+    assert len(result['failures']) == 8 and result['more_failures'] == 4
+    assert all(f['code'] == 'unknown_source' and 'source_id' not in f for f in result['failures'])
+    assert 'private value' not in json.dumps(result)
+    assert svc.get(mid)['analysis'] is None
+
+
+def test_short_substrings_and_ambiguous_dates_use_corrected_transcript(meeting):
+    svc, mid = meeting
+    sid = svc.get(mid)['segments'][0]['id']
+    svc.correct(mid, 'text', sid, 'Yes. I will send it next weekend.', 0)
+    page = read_transcript(svc, mid)
+    item = wire_item(page)
+    item['citations'][0]['quote'] = 'I will send it next weekend.'
+    item['due'] = {'segment_id': 's0', 'quote': 'next weekend', 'proposed_date': None}
+    reply = {'kind': 'summary', 'text': 'Affirmative reply.',
+             'citations': [{'segment_id': 's0', 'quote': 'Yes'}],
+             'owner': {'basis': 'unresolved', 'segment_id': None, 'name': None},
+             'due': {'segment_id': None, 'quote': None, 'proposed_date': None}}
+    result = save_notes(svc, mid, page['basis'], [item, reply])
+    assert result['items_by_kind'] == {'commitment': 1, 'summary': 1}
+    saved = svc.get(mid)['analysis']
+    assert saved['items'][0]['date_status'] == 'needs_confirmation'
+    assert saved['sources'][sid]['text'] == page['segments'][0][2]
+    # Moving an exact quote to a different source must still fail.
+    reply['citations'][0]['segment_id'] = 's1'
+    with pytest.raises(NotesValidationError) as error:
+        save_notes(svc, mid, result['basis'], [item, reply])
+    assert error.value.failures[0]['source_id'] == 's1'
+    assert len(svc.get(mid)['analysis_versions']) == 1
+
+
+def test_owner_date_schema_and_duplicate_errors_have_safe_locations(meeting):
+    svc, mid = meeting
+    page = read_transcript(svc, mid)
+    item = wire_item(page)
+    item['citations'].append(copy.deepcopy(item['citations'][0]))
+    item['owner']['segment_id'] = 's1'
+    item['due'] = {'segment_id': 's1', 'quote': 'Private date', 'proposed_date': 'not a date'}
+    with pytest.raises(NotesValidationError) as error:
+        save_notes(svc, mid, page['basis'], [item])
+    assert {f['code'] for f in error.value.failures} == {
+        'duplicate_source', 'invalid_owner_evidence', 'invalid_date_evidence', 'invalid_calendar_date'}
+    assert 'Private' not in json.dumps(error.value.as_dict())
+    item = wire_item(page)
+    item['owner']['name'] = {'private content': 'never echo this'}
+    with pytest.raises(NotesValidationError) as error:
+        save_notes(svc, mid, page['basis'], [item])
+    assert error.value.failures == [{'path': 'items[0].owner.name', 'code': 'schema_mismatch'}]
+    assert 'never echo' not in str(error.value)
+    assert svc.get(mid)['analysis'] is None
+
+
+def test_persistence_boundary_reports_short_ids_and_rejects_entire_batch(meeting):
+    svc, mid = meeting
+    snapshot = svc.get(mid)
+    data = payload(snapshot)
+    data['items'][0]['citations'][0]['quote'] = 'Invented private wording'
+    with pytest.raises(NotesValidationError) as error:
+        svc.save_analysis(snapshot, data)
+    assert error.value.failures[0]['source_id'] == 's0'
+    assert snapshot['active'] not in json.dumps(error.value.as_dict())
+    assert svc.get(mid)['analysis'] is None
     assert svc.get(mid)['analysis'] is None

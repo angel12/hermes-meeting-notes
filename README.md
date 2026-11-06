@@ -59,6 +59,8 @@ Hermes loads the bundled skill, reads the corrected transcript with `meeting_tra
 
 Transcript pages preserve all text and short source IDs. The skill reads every page before analysis. Saving checks the transcript version, correction revision and prior saved analysis, validates the structured items and exact source quotes, and writes an immutable analysis. Dates stay unconfirmed, missing owners remain unresolved, and no external tasks are created. Citation validation establishes source integrity, not semantic correctness; review the claims.
 
+Rejected notes return up to eight diagnostic locations (`failures`, with zero-based item/citation paths, error codes and known short source IDs), plus `more_failures` for remaining errors. Diagnostics never echo submitted quotes or transcript text. Rejection writes nothing: repair sources through `meeting_transcript` and resubmit the complete notes set. Each successful save becomes the current analysis rather than appending items; its response includes the new `basis`, `items_saved`, and `items_by_kind`. The skill prohibits diagnostic partial saves, direct database/raw-file inspection, and self-editing the plugin during analysis. Pages vary in length; follow the returned `next_offset` sequentially.
+
 The shared UI refreshes to show saved notes, quoted evidence and source playback. Correcting a transcript marks existing notes for review. Speaker-based owners update immediately; explicitly named owners stay unchanged. Regeneration retains history, preserves IDs only for exact item matches, and marks unmatched previous items for review.
 
 ## Recorders that split meetings into files
