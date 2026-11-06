@@ -38,3 +38,8 @@ Per-meeting Analysis profile now lists existing Hermes profiles on the importing
 
 
 Deployment update: the polished shared UI, combined-recording form and profile selector are now installed on the Compose test host after Opus 5.5 review and fixes. The host-reconciled `desktop/plugin.js` matches the local artifact exactly. Seventy-four tests and authenticated API/playback checks pass. Reload the Webapp to load it; real host visual acceptance and native Desktop checks are still pending.
+
+
+## Action Items tab
+
+Action Items sits beside Notes and uses the same shared plugin in Desktop and Webapp. Users generate proposals in Hermes, review quoted evidence, choose a calendar/to-do destination, then explicitly prepare and copy a handoff into the selected profile chat. The panel polls persisted results and shows needs-input, uncertain, completed and failed outcomes with provider IDs/links. A task being added is distinct from its work being finished. Older unmatched handoffs remain visible after regeneration. Synthetic UI tests cover a lost prepare response with the same request ID, clipboard handoff scope, completed-result refresh, stale proposal gating and retained uncertain history. Visual acceptance and a real connected-service round trip remain open.

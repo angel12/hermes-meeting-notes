@@ -2,7 +2,7 @@
 
 # Hermes Meeting Notes
 
-Early implementation of an import → diarized transcript → corrected speakers → sourced notes workflow. One agent package and one `desktop/plugin.js` target native Desktop and the new Webapp. The legacy dashboard has no UI; its manifest mounts backend routes only.
+Early implementation of an import → diarized transcript → corrected speakers → sourced notes → action handoff workflow. One agent package and one `desktop/plugin.js` target native Desktop and the new Webapp. The legacy dashboard has no UI; its manifest mounts backend routes only.
 
 ## Implemented
 
@@ -13,11 +13,12 @@ Early implementation of an import → diarized transcript → corrected speakers
 - Deterministic timestamped segments, transcript-scoped IDs, whole-label merges, participant renames, segment speaker/text corrections and append-only undo with revision checks.
 - Prototype shared UI with explicit Upload and transcribe, persistent selection/error feedback, chunk progress, live transcription status, corrections and short WAV playback windows.
 - Sourced notes, decisions, open questions, commitments and suggestions through the bundled `meeting_notes:analyze` skill in the current Hermes session. Exact excerpts, correction-aware speaker owners, immutable analysis history and revision checks.
-- Six registered agent tools: `meeting_list`, `meeting_get`, `meeting_correct`, `meeting_retry_transcription`, `meeting_transcript`, `meeting_save_notes`.
+- Action Items beside Notes: sourced tasks, follow-up meetings and training proposals, with user-selected handoffs to the Hermes profile’s calendar or to-do tools and durable reported outcomes.
+- Nine registered agent tools: `meeting_list`, `meeting_get`, `meeting_correct`, `meeting_retry_transcription`, `meeting_transcript`, `meeting_save_notes`, `meeting_actions`, `meeting_save_actions`, `meeting_action_callback`. Three bundled skills: `analyze`, `action_items`, `handoff`.
 - Combine 2–20 completed recordings in a chosen order into a new meeting without retranscription. Corrected transcript snapshots retain recording/segment provenance, independent speaker labels and audio playback across file boundaries. Original meetings remain unchanged.
 - A persistent Hermes analysis-profile selector per meeting. The selected profile may read that meeting's transcript and save sourced notes back to its importing profile; saved analyses record the actual profile. Profile changes invalidate in-flight notes.
 
-**Not release-ready.** Authenticated Webapp passes the synthetic upload/transcription/playback smoke test on the remote Compose host; native Desktop checks remain open. Shared UI polish, combining recordings and profile selection are deployed to the test Webapp and need visual/user acceptance. External-task integration, owner/date confirmation, upload expiration cleanup and offline response reparse remain open. No external task system is simulated.
+**Not release-ready.** Authenticated Webapp passes the synthetic upload/transcription/playback smoke test on the remote Compose host; native Desktop checks remain open. Shared UI polish, combining recordings and profile selection are deployed to the test Webapp and need visual/user acceptance. Action handoffs are implemented and covered by synthetic tests; live calendar/to-do acceptance remains open and requires the selected profile’s connected tools. Upload expiration cleanup and offline response reparse remain open. No external task system is simulated, and no direct Todoist integration is planned.
 
 ## Development
 
@@ -37,7 +38,7 @@ Configure `MEETING_NOTES_ASR_KEY` through Hermes secret configuration. The plugi
 
 ## Lifecycle and current limits
 
-Use a dedicated single-profile host for import, correction and transcription. Those operations still reject multiplexed/routed requests. Only the notes read/save tools permit a host-bound selected analysis profile to access its assigned meeting in the importing profile on the same machine. Workers run in a daemon thread in the API/plugin host; closing a tab does not itself cancel them, but stopping that host interrupts them. Desktop quit can shut down its local backend. Do not assume work survives quitting Desktop. On restart, explicitly start queued work; expired attempts become `interrupted_unknown`, and only Retry sends another request. GET/status never starts work.
+Use a dedicated single-profile host for import, correction and transcription. Those operations still reject multiplexed/routed requests. Notes and action read/save tools permit a host-bound selected analysis profile to access its assigned meeting in the importing profile on the same machine. Handoff callbacks are scoped to the original selected profile and the particular user-created handoff. Workers run in a daemon thread in the API/plugin host; closing a tab does not itself cancel them, but stopping that host interrupts them. Desktop quit can shut down its local backend. Do not assume work survives quitting Desktop. On restart, explicitly start queued work; expired attempts become `interrupted_unknown`, and only Retry sends another request. GET/status never starts work.
 
 Concurrency is one active transcription per profile database. **Multiple independent host/profile databases pointing at the same endpoint are not yet coordinated; run only one for this early build.** A future endpoint-wide coordination mechanism is required before claiming unrestricted concurrency safety.
 
@@ -45,7 +46,7 @@ The UI caps uploads at 512 MiB (a local resource cap, not a verified model limit
 
 Raw word confidence values from the verified server are placeholders and are not shown as confidence. Speaker labels are anonymous participants, not identities. No claim is made that audio after the final returned word is silence. Transcript completeness and the serving host's practical limits still require review.
 
-Audio, transcripts and corrections remain in the profile's `plugin-data/meeting_notes` directory. ASR requests send audio to the configured endpoint. The notes skill reads the corrected transcript into the Hermes conversation, where it is processed by that session’s selected model and retained in normal chat history. There is no telemetry or external-task write. Test fixtures are synthetic; private recordings and responses must remain outside the repository and public demo assets.
+Audio, transcripts and corrections remain in the profile's `plugin-data/meeting_notes` directory. ASR requests send audio to the configured endpoint. The notes skill reads the corrected transcript into the Hermes conversation, where it is processed by that session’s selected model and retained in normal chat history. There is no telemetry. The plugin itself makes no calendar/task API calls; a user-requested handoff is executed by Hermes using that profile’s existing tools, and its result is stored back in Meeting Notes. Test fixtures are synthetic; private recordings and responses must remain outside the repository and public demo assets.
 
 See [feasibility evidence and remaining gates](docs/feasibility.md).
 
@@ -55,7 +56,7 @@ Review the speakers, then copy the meeting’s notes request into a Hermes chat:
 
 > Use the meeting_notes:analyze skill to generate and save sourced notes for meeting MEETING_ID.
 
-Hermes loads the bundled skill, reads the corrected transcript with `meeting_transcript`, writes the notes itself in the conversation, and calls `meeting_save_notes`. The plugin makes no nested model call and has no analysis provider, retry loop, or inference timeout. The selected chat model handles the analysis as part of its normal turn.
+Hermes loads the bundled skill, reads the corrected transcript with `meeting_transcript`, writes the notes itself in the conversation, and calls `meeting_save_notes`. The plugin makes no nested model call and has no analysis provider, retry loop, or inference timeout. The selected chat model handles the analysis as part of its normal turn. After saving notes, the skill extracts action proposals into Action Items separately; a proposal failure does not discard saved notes.
 
 Transcript pages preserve all text and short source IDs. The skill reads every page before analysis. Saving checks the transcript version, correction revision and prior saved analysis, validates the structured items and exact source quotes, and writes an immutable analysis. Dates stay unconfirmed, missing owners remain unresolved, and no external tasks are created. Citation validation establishes source integrity, not semantic correctness; review the claims.
 
@@ -81,8 +82,24 @@ Chunks returning no words receive a visible audio-review warning, never an asser
 
 ## Choose the Hermes analysis profile
 
-Each meeting defaults to its importing profile. **Analysis profile** saves a different existing Hermes profile on the same host. Selecting it explicitly grants that profile access to this meeting's transcript and permission to save notes back. Audio, raw responses, corrections and notes stay in the importing profile's database; no profile credentials are read or copied. The analysis profile must have Meeting Notes enabled and its own working model credentials.
+Each meeting defaults to its importing profile. **Analysis profile** saves a different existing Hermes profile on the same host. Selecting it explicitly grants that profile access to this meeting’s transcript, notes and action items, and permission to save sourced notes and action proposals back. Audio, raw responses, corrections and notes stay in the importing profile's database; no profile credentials are read or copied. The analysis profile must have Meeting Notes enabled and its own working model credentials.
 
 Use **Copy request and open profile**, then paste the request into that profile's new Hermes chat. The request includes `source_profile`, which the skill passes on every transcript read and notes save. A new chat uses the profile's normal configuration; any model override you make in chat remains your choice. Existing conversations are not interrupted and no model call runs just from changing the selector. Return to the importing profile's Meeting Notes view to review saved notes.
 
 The plugin verifies the actual host-bound profile on each read and again inside the notes-save transaction. Changing the selected profile invalidates old in-flight notes, even if you switch away and back. Earlier analyses retain their original profile attribution. Unavailable profiles are not silently replaced. The open-chat action uses the importing connection's exact route; ambiguous or unsupported routes produce an error. A single-profile Webapp deployment cannot open another profile through that server: use a Hermes host that serves the selected profile, with access to the same profile storage. Cross-machine meeting transfer is not implemented.
+
+## Review and hand off action items
+
+Open **Action Items** next to **Notes**. New notes runs extract proposals automatically through the bundled skills; for an existing meeting, copy **Find action items with Hermes** into the selected profile's chat. Hermes reads the corrected transcript and saves sourced tasks, follow-up meetings and training proposals. This does not create external tasks or events. Collective wording such as “we need to” leaves the individual owner unresolved; exact quotes alone do not prove an action was accepted.
+
+For a proposal you want to act on:
+
+1. Choose **Hand off to Hermes**, select **My calendar** or **My to-do list**, and add confirmed details or instructions.
+2. **Prepare handoff** saves the request. Use **Copy request and open profile**, then paste it into that profile's chat. The profile needs the appropriate connected tools; the plugin has no provider-specific adapter or credentials.
+3. Hermes claims that handoff once, checks the destination and missing details, performs the authorized action through its normal tools and approvals, then calls `meeting_action_callback` with the outcome. The tab refreshes to show what was done, the provider, external ID and any returned link. “Handoff completed” means a task was added or event scheduled, not that the underlying work was finished.
+
+If details or access are missing, Hermes reports **Needs details or access** before making an external change. Add the requested information and press **Continue with these details**, then send the updated handoff request to Hermes. Configure credentials privately through Hermes, never in the instructions box. Only requests that have not started can be cancelled. An interrupted or timed-out operation stays in progress or uncertain until Hermes looks up the actual outcome; reopening its request does not authorize a duplicate write.
+
+Results are **Hermes-reported**, not independently verified by Meeting Notes. A completed report requires a real provider and task/event ID. The plugin cannot enforce how a model uses other tools, and a receipt does not itself create anything. The handoff skill forbids blind retries, invented confirmations, silent invitations and unrequested external updates/deletes.
+
+Each handoff freezes its reviewed evidence, destination, instructions and profile. Changes to the transcript, owner or profile flag it for manual review and prevent an unstarted stale handoff from executing. An already-started handoff may still report its actual outcome from its original profile, even after the meeting selects another profile; that limited grant exposes only the frozen handoff, not the newly edited transcript. No credentials cross profiles. Regeneration preserves IDs only for unambiguous exact matches; unmatched handoffs remain under **Earlier action handoffs**, with their original proposals and outcome history, rather than being silently reassigned. Review earlier outcomes before handing off a revised proposal that could duplicate existing work.

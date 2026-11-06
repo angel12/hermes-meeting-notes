@@ -12,7 +12,7 @@ Do the analysis yourself in the current conversation, using the session's select
 
 ## Read the meeting
 
-1. Use the supplied meeting ID. If it is missing, call `meeting_list` and select the meeting the user named; ask if the choice is ambiguous. Do not read unrelated meetings.
+1. Use the supplied meeting ID. If it is missing, call `meeting_list` and select the meeting the user named; ask if the choice is ambiguous. Do not read unrelated meetings. Skip meeting_get for analysis: meeting_transcript already supplies the metadata and corrected source pages.
 2. Call `meeting_transcript(meeting_id=...)`. Keep the returned `basis` unchanged. It identifies the transcript version, correction revision, and previous saved analysis.
 3. Read every page sequentially: wait for a page, then call `meeting_transcript` with its exact `next_offset` and unchanged `basis`, until `next_offset` is null. Pages have a character budget, not a fixed row count: never guess strides or request future pages in parallel. Before analysis, verify you have every ID from `s0` through `s(total_segments - 1)`. Rows are `[source_id, participant_id, text]`. The participant map contains user-supplied names or null; anonymous labels are not identities. Do not renumber source IDs between pages.
 4. If the host spills a result into a file, read the complete result using the host's indicated file reader. Never summarize a shortened preview as if it were the whole transcript. If the transcript cannot fit in the session, tell the user and stop before saving a supposedly complete analysis.
@@ -46,8 +46,9 @@ A quote may be any exact, nonempty substring of its segment, including the entir
 
 For commitments only:
 
-- A clear first-person commitment can use `owner.basis: "speaker"`, its cited segment ID, and `name: null`. The plugin derives the participant from that segment and updates the owner after speaker corrections.
+- A clear individual first-person commitment can use `owner.basis: "speaker"`, its cited segment ID, and `name: null`. The plugin derives the participant from that segment and updates the owner after speaker corrections.
 - An owner explicitly named in the transcript can use `owner.basis: "named"`, a cited segment ID, and the exact name appearing in that citation's quote. This is text attribution, not a verified participant identity or external assignee.
+- Collective wording such as “we should”, “we need to”, or “we have to” does not assign the speaker as an individual owner.
 - Otherwise leave the owner unresolved. Never guess a name from a speaker label.
 - For a stated date, set `due.segment_id` to a cited source, `due.quote` to the exact date expression within that citation, and `due.proposed_date` to `YYYY-MM-DD` only when unambiguous. Interpret relative dates against the returned `meeting_local_date` and `timezone`, never today's date. If ambiguous, keep the quote and leave `proposed_date` null. Dates remain unconfirmed proposals.
 
@@ -62,3 +63,6 @@ Pass structured tool arguments, not pre-escaped JSON strings. If the host's `too
 The tool checks the schema, source IDs, exact quotes, owner/date references, and revision, then saves an immutable analysis with citation playback in the UI. It does not prove that your interpretation follows from the quote. On rejection, use `failures`: paths such as `items[2].citations[0].quote` are zero-based; `source_id` identifies a known source. Up to eight failures are returned, with `more_failures` counting the rest. Re-read the indicated sources through `meeting_transcript` with the same basis/source_profile (you may start at the numeric source offset for this targeted repair). Fix the reported defects and resubmit the complete set. If another error remains, diagnose it from the new details; do not infer undocumented quote rules or drop evidence merely to pass. Recheck affected claims after any citation edit. The date expression must be inside the cited quote, not just elsewhere in that segment. Preserve valid owners and date expressions; an ambiguous date keeps its exact quote and a null `proposed_date`, even while an unrelated citation is being repaired.
 
 Only report that notes were saved after the tool returns `status: "saved"`. Stop saving once the complete set succeeds. Success returns the new `basis`, `items_saved`, and `items_by_kind`; derive any reported counts from those values. Give the user a concise summary and point them to the meeting's Notes view. Mention unresolved owners/dates and coverage gaps when relevant. Existing analysis history remains available. No Todoist or other external action is part of this skill.
+
+
+After saving notes, load `meeting_notes:action_items` to extract and save concrete follow-up proposals (including tasks, meetings and training) to Action Items. Reuse already-read source text only after verifying its transcript/revision matches the current action basis. Keep the successful notes even if action extraction needs repair, and report the two outcomes separately. This step creates proposals only; the user must hand off an individual item before any calendar or to-do write.

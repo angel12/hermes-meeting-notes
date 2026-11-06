@@ -53,7 +53,7 @@ def test_tool_manifest_matches_registration():
         def llm(self): pytest.fail('Notes workflow must not access a nested LLM')
     mod.register(Context())
     assert set(names)==set(yaml.safe_load((root/'plugin.yaml').read_text())['provides_tools'])
-    assert skills==['analyze']
+    assert skills==['analyze', 'action_items', 'handoff']
     assert 'meeting_analyze' not in names
 
 

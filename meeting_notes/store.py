@@ -74,6 +74,13 @@ class Store:
                 job TEXT NOT NULL, part INTEGER NOT NULL, FOREIGN KEY(job,part) REFERENCES asr_parts(job,idx));
             CREATE TABLE IF NOT EXISTS asr_attempt_settings(attempt TEXT PRIMARY KEY REFERENCES attempts(id),
                 settings TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS action_sets(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),
+                transcript TEXT NOT NULL REFERENCES transcripts(id), revision INTEGER NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS action_handoffs(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),
+                action_id TEXT NOT NULL, request_id TEXT NOT NULL, request_hash TEXT NOT NULL, profile TEXT NOT NULL,
+                transcript TEXT NOT NULL, revision INTEGER NOT NULL, destination TEXT NOT NULL, instructions TEXT NOT NULL,
+                snapshot TEXT NOT NULL, state TEXT NOT NULL, version INTEGER NOT NULL, result TEXT, history TEXT NOT NULL,
+                created REAL NOT NULL, updated REAL, UNIQUE(meeting,request_id));
             ''')
 
     @contextlib.contextmanager

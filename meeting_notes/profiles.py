@@ -80,3 +80,34 @@ def analysis_service(meeting, source_profile=None):
     with svc.db() as db:
         svc.check_analysis_profile(db,meeting)
     return svc
+
+
+def handoff_service(meeting, handoff_id, source_profile=None):
+    """A frozen handoff grant permits its original actor to report late receipts.
+
+    This does not grant access to the current transcript after profile revocation.
+    Begin rechecks the current meeting selection; read returns only the frozen grant.
+    """
+    from .service import Service
+    available = catalog()
+    actor = current_profile(available)
+    source = actor if source_profile is None else source_profile
+    if not isinstance(source, str) or source not in available:
+        raise ValueError('The importing Hermes profile is unavailable')
+    root = available[source]/'plugin-data'/'meeting_notes'
+    if root.resolve() != root or not (root/'data.sqlite').is_file():
+        raise ValueError('Meeting storage is unavailable')
+    with sqlite3.connect((root/'data.sqlite').as_uri()+'?mode=ro', uri=True) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_handoffs'").fetchone():
+            raise ValueError('Handoff not found')
+        row = db.execute('SELECT profile FROM action_handoffs WHERE id=? AND meeting=?', (handoff_id, meeting)).fetchone()
+        if not row or row[0] != actor:
+            raise ValueError('This handoff is not assigned to the current Hermes profile')
+    svc = Service(root)
+    svc.owner_profile = source
+    svc.analysis_actor = actor
+    svc.analysis_meeting = meeting
+    svc.handoff_actor = actor
+    svc.handoff_id = handoff_id
+    svc.handoff_meeting = meeting
+    return svc

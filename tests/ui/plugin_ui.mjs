@@ -494,6 +494,63 @@ test('chunk progress and completed boundary review are visible', async () => {
   assert.ok(screen.getByText(/no words returned; review the audio/))
 })
 
+test('Action Items prepares an idempotent handoff and displays a polled callback', async () => {
+  const meeting = { id: 'm1', active: T, revision: 2, owner_profile: 'default', analysis_profile: 'research', segments: effective([]) }
+  const proposal = { id: 'action1', action_type: 'training', kind: 'suggestion', text: 'Schedule a synthetic training session.',
+    citations: [{ segment_id: `${T}:s00001`, quote: 'I will send the draft budget by Friday.' }],
+    owner: { basis: 'unresolved', segment_id: null, name: null }, due: { segment_id: null, quote: null, proposed_date: null } }
+  let data = { actions_id: 'set1', items: [proposal], sources: { [`${T}:s00001`]: { ...baseSegments[1], participant: '1', name: 'Sam' } }, needs_review: false, handoffs: [] }
+  const writes = []; let loseFirstReply = true
+  const rest = async (path, opts = {}) => {
+    if (!opts.method) return structuredClone(data)
+    assert.equal(path, '/meetings/m1/handoffs')
+    writes.push(structuredClone(opts.body))
+    data.handoffs = [{ id: 'handoff1', action_id: proposal.id, state: 'pending', version: 0, profile: 'research', destination: opts.body.destination,
+      instructions: opts.body.instructions, snapshot: { item: proposal }, history: [], result: null, needs_review: false }]
+    if (loseFirstReply) { loseFirstReply = false; throw new Error('Synthetic lost response') }
+    return { handoff_id: 'handoff1' }
+  }
+  const view = render(React.createElement(plugin.ActionItemsPanel, { meeting, rest, play: () => {}, showSegment: () => {}, hostApi: {} }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Hand off to Hermes' }))
+  assert.equal(writes.length, 0)
+  fireEvent.change(screen.getByLabelText('Instructions for Hermes'), { target: { value: 'Ask me for the attendees and time.' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare handoff' }))
+  await screen.findByText('Synthetic lost response')
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare handoff' }))
+  await screen.findByText('Ready to hand off')
+  assert.equal(writes.length, 2)
+  assert.deepEqual(writes[0], writes[1])
+  assert.equal(writes[0].destination, 'calendar')
+  assert.equal(writes[0].revision, 2)
+  assert.equal(writes[0].actions_id, 'set1')
+  assert.match(screen.getByLabelText('Handoff request to paste into Hermes chat').value, /handoff1.*source_profile="default".*profile "research"/)
+  assert.equal(screen.queryByRole('button', { name: 'Hand off to Hermes' }), null)
+  data.handoffs[0] = { ...data.handoffs[0], state: 'completed', version: 2,
+    result: { summary: 'Synthetic event scheduled for the confirmed time.', provider: 'Test calendar', external_id: 'event1', url: 'https://calendar.test/event1' } }
+  await screen.findByText('Synthetic event scheduled for the confirmed time.', {}, { timeout: 8000 })
+  assert.equal(screen.getByRole('link', { name: 'Open external result' }).href, 'https://calendar.test/event1')
+  assert.equal(writes.length, 2, 'polling never dispatches an external action')
+  view.unmount()
+})
+
+test('Action Items retains uncertain earlier handoffs and blocks stale proposals', async () => {
+  const meeting = { id: 'm1', active: T, revision: 3, owner_profile: 'default', analysis_profile: 'default', segments: effective([]) }
+  const proposal = { id: 'new', action_type: 'task', kind: 'suggestion', text: 'Review a changed synthetic proposal.', citations: [],
+    owner: { basis: 'unresolved', segment_id: null, name: null }, due: { segment_id: null, quote: null, proposed_date: null } }
+  const data = { actions_id: 'set2', items: [proposal], sources: {}, needs_review: true,
+    handoffs: [{ id: 'oldhandoff', action_id: 'old', profile: 'default', destination: 'todo', state: 'unknown', version: 2,
+      snapshot: { item: { text: 'Earlier synthetic action.' } }, needs_review: true,
+      result: { summary: 'Connection interrupted; task may exist.', provider: 'Test tasks', external_id: '', url: '' }, history: [] }] }
+  const writes = []
+  render(React.createElement(plugin.ActionItemsPanel, { meeting, rest: async (path, opts) => { if (opts?.method) writes.push(opts); return data }, hostApi: {} }))
+  assert.ok((await screen.findByRole('button', { name: 'Hand off to Hermes' })).disabled)
+  assert.ok(screen.getByRole('region', { name: 'Earlier action handoffs' }))
+  assert.ok(screen.getByText('Connection interrupted; task may exist.'))
+  assert.ok(screen.getByText(/An external change may have happened/))
+  assert.equal(screen.queryByRole('button', { name: 'Cancel handoff' }), null)
+  assert.equal(writes.length, 0)
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }

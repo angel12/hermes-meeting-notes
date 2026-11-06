@@ -14,6 +14,7 @@ if 'meeting_notes' not in sys.modules:
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from meeting_notes import runtime
 from meeting_notes.service import CHUNK
+from meeting_notes import actions
 
 router = APIRouter()
 
@@ -75,6 +76,25 @@ def meeting(ident: str):
 @router.get('/meetings/{ident}/analyses/{analysis_id}')
 def analysis(ident: str, analysis_id: str):
     return call(lambda:runtime.service().get_analysis(ident,analysis_id))
+
+
+@router.get('/meetings/{ident}/actions')
+def action_items(ident: str):
+    return call(lambda:actions.view(runtime.service(),ident))
+
+
+@router.post('/meetings/{ident}/handoffs')
+def handoff(ident: str, body: dict):
+    if set(body) != {'action_id','actions_id','revision','destination','instructions','request_id'}:
+        raise HTTPException(400,'Expected action, action-set, revision, destination, instructions and request ID')
+    return call(lambda:actions.create_handoff(runtime.service(),ident,**body))
+
+
+@router.post('/meetings/{ident}/handoffs/{handoff_id}')
+def update_handoff(ident: str, handoff_id: str, body: dict):
+    if set(body) != {'version','operation','instructions'}:
+        raise HTTPException(400,'Expected version, operation and instructions')
+    return call(lambda:actions.user_update(runtime.service(),ident,handoff_id,**body))
 
 
 @router.post('/uploads')

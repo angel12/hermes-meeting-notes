@@ -813,7 +813,7 @@ export function AnalysisProfile({ meeting, rest, act, busy }) {
   const selected = meeting.analysis_profile || meeting.owner_profile || options?.current || ''
   const missing = options && selected && !options.profiles.includes(selected)
   return h('div', { className: 'mn-card' },
-    h(Field, { label: 'Analysis profile', hint: 'Uses this Hermes profile’s model, instructions and tools in its chat. Only this meeting’s transcript and notes are shared with it.' },
+    h(Field, { label: 'Analysis profile', hint: 'Uses this Hermes profile’s model, instructions and tools in its chat. This meeting’s transcript, notes and action items are shared with it. User-created handoffs use its connected tools.' },
       h('select', { className: 'mn-input', value: selected, disabled: busy || !options,
         onChange: e => { const profile = e.target.value; act('Analysis profile saved. Use a chat in that profile to generate notes.', r => r(`/meetings/${meeting.id}/analysis-profile`, { method: 'PUT', body: { profile, revision: meeting.revision } })) } },
       !options && h('option', { value: selected }, selected || 'Loading profiles…'),
@@ -823,8 +823,8 @@ export function AnalysisProfile({ meeting, rest, act, busy }) {
     missing && h(Callout, { tone: 'warn', role: 'status' }, 'The saved profile is unavailable. Select an existing profile; analysis will not silently use another one.'))
 }
 
-export function RequestBox({ meeting, hasNotes, hostApi = host }) {
-  const text = notesRequest(meeting)
+export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, title, description, inputLabel, hint }) {
+  const text = requestText || notesRequest(meeting)
   const ref = useRef(null)
   const [copied, setCopied] = useState('')
   const [opening, setOpening] = useState(false)
@@ -838,7 +838,7 @@ export function RequestBox({ meeting, hasNotes, hostApi = host }) {
       copiedRequest = true
       const route = await analysisChatRoute(hostApi, meeting.analysis_profile || meeting.owner_profile, connection.current)
       hostApi.newChat(route)
-      setCopied('Request copied. Paste it into the new profile chat. Notes save back to the importing profile.')
+      setCopied('Request copied. Paste it into the new profile chat. Results save back to the importing profile.')
     } catch (e) { setCopied(`${copiedRequest ? 'Request copied. ' : ''}${errorText(e)}`) }
     finally { setOpening(false) }
   }
@@ -854,12 +854,12 @@ export function RequestBox({ meeting, hasNotes, hostApi = host }) {
   }
   return h('div', { className: 'mn-card' },
     h('div', { className: 'mn-spread' },
-      h('strong', null, hasNotes ? 'Regenerate notes in Hermes chat' : 'Generate notes in Hermes chat'),
+      h('strong', null, title || (hasNotes ? 'Regenerate notes in Hermes chat' : 'Generate notes in Hermes chat')),
       btn({ size: 'xs', onClick: copy }, 'Copy request'),
       meeting.owner_profile && btn({ size: 'xs', onClick: openProfile, disabled: opening }, opening ? 'Opening…' : 'Copy request and open profile')),
-    h('p', { className: 'mn-muted' }, `The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` Analyze in profile ${meeting.analysis_profile || meeting.owner_profile}; notes remain with the importing profile ${meeting.owner_profile}. The plugin must be enabled in the analysis profile.` : ''}`),
-    h('input', { ref, className: 'mn-input', readOnly: true, value: text, 'aria-label': 'Notes request to paste into Hermes chat', onFocus: e => e.target.select(), style: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 } }),
-    h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' }, copied || 'Review speakers first. The skill reads the current transcript and checks its revision before saving.'))
+    h('p', { className: 'mn-muted' }, description || `The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` Analyze in profile ${meeting.analysis_profile || meeting.owner_profile}; notes remain with the importing profile ${meeting.owner_profile}. The plugin must be enabled in the analysis profile.` : ''}`),
+    h('input', { ref, className: 'mn-input', readOnly: true, value: text, 'aria-label': inputLabel || 'Notes request to paste into Hermes chat', onFocus: e => e.target.select(), style: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 } }),
+    h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' }, copied || hint || 'Review speakers first. The skill reads the current transcript and checks its revision before saving.'))
 }
 
 function Citation({ citation, source, participants, play, onShow, canShow }) {
@@ -951,6 +951,105 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
       h('div', { style: { marginTop: 8 } }, h(RequestBox, { meeting, hasNotes: true }))))
 }
 
+export function actionsRequest(meeting) {
+  return `Use meeting_notes:action_items to find and save sourced tasks, follow-up meetings and training proposals for meeting ${meeting.id}.${meeting.owner_profile ? ` Pass source_profile=${JSON.stringify(meeting.owner_profile)} to every meeting tool call. Run in profile ${JSON.stringify(meeting.analysis_profile || meeting.owner_profile)}.` : ''} Save proposals only; do not create calendar events or external tasks.`
+}
+
+export function handoffRequest(meeting, handoff) {
+  return `Use meeting_notes:handoff for meeting ${meeting.id}, handoff ${handoff.id}. Pass source_profile=${JSON.stringify(meeting.owner_profile)} to every callback. Run in profile ${JSON.stringify(handoff.profile)}. Read the recorded user request and current handoff state first. Claim it before any external write; never repeat an already-started operation. Report the actual outcome with meeting_action_callback so Action Items is updated.`
+}
+
+const HANDOFF_LABELS = { pending: 'Ready to hand off', running: 'In progress · outcome not confirmed', needs_input: 'Needs details or access', unknown: 'Outcome uncertain', completed: 'Handoff completed · Hermes reported', failed: 'No external change reported', cancelled: 'Cancelled before starting' }
+
+export function ActionItemsPanel({ meeting, participants = [], rest, play, showSegment, hostApi = host }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [form, setForm] = useState(null)
+  const [details, setDetails] = useState({})
+  const serial = useRef(0), alive = useRef(true), locked = useRef(false)
+  const load = useCallback(async () => {
+    const seq = ++serial.current
+    try {
+      const result = await rest(`/meetings/${meeting.id}/actions`)
+      if (alive.current && seq === serial.current) { setData(result); setError('') }
+    } catch (e) { if (alive.current && seq === serial.current) setError(errorText(e)) }
+  }, [rest, meeting.id])
+  useEffect(() => {
+    alive.current = true; setData(null); setForm(null); setDetails({}); load()
+    const timer = setInterval(() => { if (!locked.current && !globalThis.document?.hidden) load() }, POLL_MS)
+    return () => { alive.current = false; serial.current++; clearInterval(timer) }
+  }, [load])
+  useEffect(() => { if (!locked.current) load() }, [load, meeting.revision])
+  const mutate = async action => {
+    if (locked.current) return
+    locked.current = true; serial.current++; setBusy(true); setError('')
+    try { await action(); if (alive.current) { setForm(null); await load() } }
+    catch (e) { if (alive.current) setError(errorText(e)) }
+    finally { locked.current = false; if (alive.current) setBusy(false) }
+  }
+  const update = (handoff, operation) => mutate(() => rest(`/meetings/${meeting.id}/handoffs/${handoff.id}`, {
+    method: 'POST', body: { operation, version: handoff.version, instructions: details[handoff.id] ?? handoff.instructions }
+  }))
+  const requestBox = h(RequestBox, { meeting, hostApi, requestText: actionsRequest(meeting), title: data?.items.length ? 'Refresh action proposals in Hermes' : 'Find action items with Hermes',
+    inputLabel: 'Action items request to paste into Hermes chat', description: 'Hermes reviews the transcript for tasks, follow-up meetings and training. These are proposals. Choose an item below to hand it to your calendar or to-do tools.' })
+  const handoffCard = handoff => h('div', { key: handoff.id, className: 'mn-card', 'aria-label': 'Handoff outcome' },
+    h('strong', null, HANDOFF_LABELS[handoff.state] || handoff.state),
+    h('p', { className: 'mn-faint' }, `${handoff.destination === 'calendar' ? 'Calendar' : 'To-do list'} · profile ${handoff.profile}`),
+    handoff.needs_review && h(Callout, { tone: 'warn' }, 'The meeting or proposal changed after this handoff. Review its external result manually; nothing was updated automatically.'),
+    handoff.result && h(Fragment, null,
+      h('p', null, handoff.result.summary),
+      handoff.result.provider && h('p', { className: 'mn-faint' }, `${handoff.result.provider}${handoff.result.external_id ? ` · ${handoff.result.external_id}` : ''}`),
+      handoff.result.url && h('a', { href: handoff.result.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open external result')),
+    handoff.state === 'unknown' && h(Callout, { tone: 'warn' }, 'An external change may have happened. Ask Hermes to look it up before any retry.'),
+    ['pending', 'running', 'unknown'].includes(handoff.state) && h(RequestBox, {
+      meeting: { ...meeting, analysis_profile: handoff.profile }, hostApi,
+      requestText: handoffRequest(meeting, handoff), title: handoff.state === 'pending' ? 'Send this handoff to Hermes' : 'Review this handoff with Hermes',
+      inputLabel: 'Handoff request to paste into Hermes chat',
+      hint: 'Hermes reads this saved handoff and records its outcome here. Copying alone does not execute it.',
+      description: handoff.state === 'pending' ? 'Paste this request into the selected profile chat. Hermes uses its available calendar or to-do tools, asks for missing details, and reports the actual outcome here.' : 'The same handoff ID preserves its history. Hermes must check the existing outcome instead of starting another external write.' }),
+    handoff.state === 'pending' && btn({ variant: 'ghost', disabled: busy, onClick: () => update(handoff, 'cancel') }, 'Cancel handoff'),
+    handoff.state === 'needs_input' && h('form', { onSubmit: e => { e.preventDefault(); update(handoff, 'continue') } },
+      h(Field, { label: 'Additional handoff details', hint: 'Confirm the calendar/list, timing, attendees or other details Hermes requested. Configure service access privately in Hermes.' },
+        h('textarea', { className: 'mn-input', maxLength: 4000, value: details[handoff.id] ?? handoff.instructions,
+          onChange: e => setDetails({ ...details, [handoff.id]: e.target.value }) })),
+      btn({ type: 'submit', disabled: busy || handoff.needs_review }, 'Continue with these details')),
+    handoff.history?.length > 1 && h('details', null, h('summary', null, 'Outcome history'), ...handoff.history.filter(e => e.result).map((event, i) => h('p', { key: i }, `${new Date(event.at * 1000).toLocaleString()}: ${event.result.summary}`))))
+  if (!meeting.active) return h('p', { className: 'mn-muted' }, 'Action items can be proposed after transcription is ready.')
+  return h('div', { className: 'mn-section' },
+    h('h2', null, 'Action Items'),
+    h('p', { className: 'mn-muted' }, 'Review each proposal, then hand it to Hermes. Adding a task or scheduling an event does not mean the underlying work is finished.'),
+    requestBox,
+    error && h(Callout, { tone: 'error', role: 'alert' }, error),
+    !data && h('p', { role: 'status' }, 'Loading action items…'),
+    data?.needs_review && h(Callout, { tone: 'warn' }, 'The transcript or profile changed. Regenerate and review action proposals before creating a handoff.'),
+    data && !data.items.length && h('p', { className: 'mn-faint' }, 'No action proposals saved yet.'),
+    ...(data?.items || []).map(item => {
+      const handoffs = data.handoffs.filter(h => h.action_id === item.id)
+      const existing = handoffs.some(h => !['failed', 'cancelled'].includes(h.state))
+      return h('article', { key: item.id, className: 'mn-card', 'aria-label': `Action: ${item.text}` },
+        h('div', { className: 'mn-spread' }, h('strong', null, item.action_type === 'meeting' ? 'Follow-up meeting' : item.action_type === 'training' ? 'Training' : 'Task'),
+          h(Badge, { variant: item.kind === 'commitment' ? 'info' : 'neutral' }, item.kind === 'commitment' ? 'Transcript commitment · review owner' : 'Proposed action')),
+        h(NoteItem, { item, analysis: { sources: data.sources }, participants, play, showSegment, liveIds: new Set(meeting.segments.map(s => s.id)) }),
+        item.kind !== 'commitment' && h('p', { className: 'mn-faint' }, 'Owner and timing need confirmation.'),
+        !existing && form?.action_id !== item.id && btn({ disabled: busy || data.needs_review, onClick: () => setForm({ action_id: item.id, actions_id: data.actions_id, revision: meeting.revision,
+          destination: item.action_type === 'task' ? 'todo' : 'calendar', instructions: '', request_id: globalThis.crypto.randomUUID() }) }, 'Hand off to Hermes'),
+        form?.action_id === item.id && h('form', { 'aria-label': 'Review handoff', onSubmit: e => { e.preventDefault(); mutate(() => rest(`/meetings/${meeting.id}/handoffs`, { method: 'POST', body: form })) } },
+          h(Field, { label: 'Destination' }, h('select', { className: 'mn-input', value: form.destination, onChange: e => setForm({ ...form, destination: e.target.value }) },
+            h('option', { value: 'todo' }, 'My to-do list'), h('option', { value: 'calendar' }, 'My calendar'))),
+          h(Field, { label: 'Instructions for Hermes', hint: 'Specify your list/calendar and confirmed details, or let Hermes ask in chat. Do not enter passwords or keys.' },
+            h('textarea', { className: 'mn-input', maxLength: 4000, value: form.instructions, onChange: e => setForm({ ...form, instructions: e.target.value }) })),
+          h('p', { className: 'mn-faint' }, `This prepares a request for profile ${meeting.analysis_profile || meeting.owner_profile || '(select a profile first)'}. No calendar event or task is created until you send it in Hermes chat.`),
+          btn({ type: 'submit', disabled: busy || data.needs_review }, 'Prepare handoff'),
+          btn({ variant: 'ghost', disabled: busy, onClick: () => setForm(null) }, 'Cancel')),
+        ...handoffs.map(handoffCard))
+    }),
+    data?.handoffs.some(h => !data.items.some(i => i.id === h.action_id)) && h('section', { 'aria-label': 'Earlier action handoffs' },
+      h('h3', null, 'Earlier action handoffs'),
+      h('p', { className: 'mn-faint' }, 'These proposals did not carry over exactly when actions were regenerated. Their external results are retained for review.'),
+      ...data.handoffs.filter(h => !data.items.some(i => i.id === h.action_id)).map(handoff => h('article', { key: handoff.id }, h('p', null, handoff.snapshot.item.text), handoffCard(handoff)))))
+}
+
 function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab }) {
   const participants = useMemo(() => participantsOf(meeting.segments, meeting.corrections), [meeting.segments, meeting.corrections])
   const [focusId, setFocusId] = useState(null)
@@ -960,7 +1059,8 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
   const noteCount = analysis ? analysis.items.length : null
   const tabs = [
     { id: 'transcript', label: 'Transcript', count: ready ? meeting.segments.length : null },
-    { id: 'notes', label: 'Notes', count: noteCount, badge: analysis?.needs_review ? h(Badge, { variant: 'warn', size: 'xs' }, 'Review') : null }
+    { id: 'notes', label: 'Notes', count: noteCount, badge: analysis?.needs_review ? h(Badge, { variant: 'warn', size: 'xs' }, 'Review') : null },
+    { id: 'actions', label: 'Action Items', count: null }
   ]
   const showSegment = id => { setTab('transcript'); setFocusId({ id, at: Date.now() }) }
   return h('div', { className: 'mn-page' },
@@ -998,7 +1098,8 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
         h(Tabs, { tabs, value: tab, onChange: setTab, label: 'Meeting sections' }),
         h('div', { role: 'tabpanel', id: `mn-panel-${tab}`, 'aria-labelledby': `mn-tab-${tab}`, tabIndex: -1 },
           tab === 'transcript' && h(TranscriptPanel, { meeting, participants, playing, focusId, setFocusId, busy, play, correct }),
-          tab === 'notes' && h(NotesPanel, { meeting, participants, rest, play, showSegment }))))
+          tab === 'notes' && h(NotesPanel, { meeting, participants, rest, play, showSegment }),
+          tab === 'actions' && h(ActionItemsPanel, { meeting, participants, rest, play, showSegment }))))
 }
 
 function Welcome({ onNew, hasMeetings }) {
