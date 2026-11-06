@@ -164,7 +164,7 @@ export const STATE_INFO = {
   failed: { label: 'Failed', tone: 'destructive', active: false,
     detail: 'Transcription did not complete. Check the transcription settings and the server, then retry.' },
   invalid_response: { label: 'Unreadable result', tone: 'destructive', active: false,
-    detail: 'The response was saved but could not be turned into a transcript. Retry resends unfinished audio; completed chunks are kept.' }
+    detail: 'The response was saved but could not be turned into a transcript. Recover saved response retries parsing locally when available. Retry transcription sends unfinished audio again; completed chunks are kept.' }
 }
 export const RETRYABLE = ['failed', 'invalid_response', 'interrupted_unknown']
 export const stateInfo = state => STATE_INFO[state] || { label: String(state || 'Unknown'), tone: 'muted', active: false, detail: '' }
@@ -775,7 +775,9 @@ function Tabs({ tabs, value, onChange, label }) {
 }
 
 function StatusPanel({ meeting, busy, act }) {
-  const info = stateInfo(meeting.job.state)
+  const info = meeting.job.local_recovery && ['queued', 'preparing'].includes(meeting.job.state)
+    ? { label: meeting.job.state === 'queued' ? 'Recovery queued' : 'Recovering saved response', active: true, detail: 'Parsing saved responses on the host. This recovery does not send audio to the provider. After a host restart, use Start queued work if needed.' }
+    : stateInfo(meeting.job.state)
   if (meeting.job.state === 'completed' && !meeting.job.error) return null
   const retry = RETRYABLE.includes(meeting.job.state)
   return h(Callout, { tone: retry ? 'error' : 'info', title: info.label, role: retry ? 'alert' : undefined },
@@ -785,6 +787,7 @@ function StatusPanel({ meeting, busy, act }) {
     meeting.job.error && h('p', { className: 'mn-muted' }, `Details: ${meeting.job.error}`),
     info.active && meeting.job.state !== 'queued' && h('p', { className: 'mn-faint' }, 'You can close this page; the host keeps working. Quitting Hermes interrupts it.'),
     h('div', { className: 'mn-row' },
+      retry && meeting.can_recover_response && btn({ disabled: busy, onClick: () => act('Local recovery requested. No audio will be sent.', rest => rest(`/meetings/${meeting.id}/recover-response`, { method: 'POST' })) }, 'Recover saved response'),
       retry && btn({ variant: 'default', disabled: busy, onClick: () => act('Retry requested. Completed chunks are retained.', rest => rest(`/meetings/${meeting.id}/retry`, { method: 'POST' })) }, 'Retry transcription'),
       retry && meeting.transcription_chunks?.length > 0 && btn({ disabled: busy, onClick: () => act('Retry requested with current settings. Completed chunks are retained; unfinished audio was replanned.', rest => rest(`/meetings/${meeting.id}/retry`, { method: 'POST', body: { use_current_settings: true } })) }, 'Retry with current settings'),
       meeting.job.state === 'queued' && btn({ disabled: busy, onClick: () => act('Queued work started.', rest => rest('/worker/start', { method: 'POST' })) }, 'Start queued work')))

@@ -37,6 +37,7 @@ class Service(Store):
 
     def begin_upload(self, size, title, date, timezone):
         from . import storage
+        from .upload_cleanup import cleanup
         if isinstance(size,bool) or not isinstance(size,int) or not 0 < size <= MAX_AUDIO:
             raise ValueError('Audio must be between 1 byte and 512 MiB')
         if not isinstance(title,str) or not title.strip() or len(title)>300:
@@ -45,6 +46,7 @@ class Service(Store):
         if dt.tzinfo is None:
             raise ValueError('Meeting date must include a UTC offset')
         ZoneInfo(timezone)
+        cleanup(self)
         ident = uid()
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -81,6 +83,8 @@ class Service(Store):
                 raise ValueError('Unknown upload')
             if upload['meeting']:
                 return {'id':upload['meeting']}
+            if upload['created'] < time.time()-86400:
+                raise ValueError('Upload expired; import the recording again')
             chunks = list(db.execute('SELECT * FROM chunks WHERE upload=? ORDER BY idx',(ident,)))
             if len(chunks) != math.ceil(upload['size']/CHUNK):
                 raise ValueError('Upload is incomplete')
@@ -127,6 +131,7 @@ class Service(Store):
             job = db.execute("SELECT id FROM jobs WHERE meeting=? AND state IN ('interrupted_unknown','failed','invalid_response')",(meeting,)).fetchone()
             if not job:
                 raise ValueError('Only stopped jobs can be retried')
+            db.execute('DELETE FROM asr_recovery WHERE job=?', (job['id'],))
             if use_current_settings:
                 from .chunking import replan_unfinished
                 replan_unfinished(db,job['id'],self.settings())

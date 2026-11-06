@@ -211,6 +211,16 @@ def retry(ident: str, body: dict | None = None):
     return result
 
 
+@router.post('/meetings/{ident}/recover-response')
+def recover_response(ident: str, body: dict | None = None):
+    if body:
+        raise HTTPException(400,'No recovery parameters are accepted')
+    from meeting_notes import recovery
+    result = call(lambda:recovery.request(runtime.service(),ident))
+    runtime.start()
+    return result
+
+
 @router.post('/meetings/{ident}/corrections')
 def correct(ident: str,body: dict):
     if set(body) != {'kind','target','value','revision'}:

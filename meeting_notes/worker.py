@@ -55,6 +55,8 @@ class Worker:
 
     def run_once(self):
         from . import deletion
+        from .upload_cleanup import cleanup as cleanup_uploads
+        cleanup_uploads(self.service)
         deletion.cleanup(self.service, automatic=True)
         if storage.run_once(self.service):
             return True
@@ -73,6 +75,13 @@ class Worker:
         wav = None
         state, error = 'failed', 'Preparation failed; check ffmpeg, endpoint, model and Hermes ASR secret.'
         try:
+            from . import recovery
+            with self.service.db() as db:
+                local_only = db.execute('SELECT 1 FROM asr_recovery WHERE job=?', (job['id'],)).fetchone() is not None
+            if local_only:
+                state,error = 'invalid_response','Saved response recovery failed validation or integrity checks. No audio was sent. The saved response remains unchanged.'
+                state,error = recovery.run(self, job)
+                return True
             from pathlib import Path
             storage.check_root(self.service, Path(job['audio']).parent.parent)
             wav = Path(job['audio']).parent/f'{job["meeting"]}.wav'
@@ -118,6 +127,7 @@ class Worker:
                     return True
                 atomic_write(path,data)
                 db.execute('UPDATE attempts SET raw=? WHERE id=?',(str(path),job['attempt']))
+                db.execute('INSERT INTO asr_responses VALUES(?,?,?)', (job['attempt'],status,hashlib.sha256(data).hexdigest()))
             state, error = 'invalid_response', 'Response saved but invalid; inspect adapter compatibility. No automatic resend.'
             if status != 200:
                 state, error = 'interrupted_unknown', f'ASR HTTP {status}; response saved. Explicit Retry required.'

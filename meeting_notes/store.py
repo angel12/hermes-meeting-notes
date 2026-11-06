@@ -49,6 +49,9 @@ class Store:
             CREATE UNIQUE INDEX IF NOT EXISTS one_job ON jobs(meeting);
             CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, job TEXT NOT NULL REFERENCES jobs(id),
                 generation INTEGER NOT NULL, started REAL NOT NULL, sent REAL, raw TEXT, outcome TEXT);
+            CREATE TABLE IF NOT EXISTS asr_responses(attempt TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE,
+                status INTEGER NOT NULL, sha TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS asr_recovery(job TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE);
             CREATE TABLE IF NOT EXISTS transcripts(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),
                 raw TEXT NOT NULL, sha TEXT NOT NULL, segments TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS corrections(id TEXT PRIMARY KEY, transcript TEXT NOT NULL REFERENCES transcripts(id),
@@ -57,6 +60,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS transcription_connections(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, size INTEGER NOT NULL, metadata TEXT NOT NULL,
                 meeting TEXT, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS upload_cleanup_retry(upload TEXT PRIMARY KEY REFERENCES uploads(id) ON DELETE CASCADE, next_check REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS chunks(upload TEXT NOT NULL REFERENCES uploads(id), idx INTEGER NOT NULL,
                 sha TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(upload,idx));
             CREATE TABLE IF NOT EXISTS analyses(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),
@@ -155,6 +159,9 @@ class Store:
             composition = db.execute('SELECT parts FROM compositions WHERE meeting=?', (meeting,)).fetchone()
             result['recordings'] = json.loads(composition[0]) if composition else []
             result['job'] = dict(db.execute('SELECT id,state,error FROM jobs WHERE meeting=?', (meeting,)).fetchone())
+            from .recovery import available
+            result['can_recover_response'] = available(db, result['job']['id'])
+            result['job']['local_recovery'] = db.execute('SELECT 1 FROM asr_recovery WHERE job=?', (result['job']['id'],)).fetchone() is not None
             plan = db.execute('SELECT * FROM asr_plans WHERE job=?',(result['job']['id'],)).fetchone()
             result['transcription_chunks'] = []
             if plan:

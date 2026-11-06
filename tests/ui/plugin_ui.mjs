@@ -901,6 +901,41 @@ test('a meeting link cannot remount a workspace with a save in flight', async ()
   await screen.findByText('Pending synthetic edit')
 })
 
+test('saved response recovery is explicit and never invokes transcription retry', async () => {
+  const b = makeBackend()
+  const baseRest = b.rest
+  let job = { id: 'j1', state: 'invalid_response', error: 'Synthetic parser rejection' }
+  b.rest = async (p, opts = {}) => {
+    if (p === '/meetings/m1/recover-response') {
+      b.calls.push({ path: p, ...opts })
+      job = { id: 'j1', state: 'queued', local_recovery: true }
+      return {}
+    }
+    const value = await baseRest(p, opts)
+    if (p === '/meetings/m1') return { ...value, job, can_recover_response: true }
+    return value
+  }
+  await openMeeting(b)
+  assert.equal(mutations(b.calls).length, 0)
+  fireEvent.click(screen.getByRole('button', { name: 'Recover saved response' }))
+  await screen.findByText('Recovery queued')
+  assert.match(screen.getByText(/Parsing saved responses/).textContent, /does not send audio/)
+  assert.deepEqual(mutations(b.calls).map(c => [c.path, c.method]), [['/meetings/m1/recover-response', 'POST']])
+})
+
+test('legacy failures offer transcription retry without promising local recovery', async () => {
+  const b = makeBackend()
+  const baseRest = b.rest
+  b.rest = async (p, opts = {}) => {
+    const value = await baseRest(p, opts)
+    return p === '/meetings/m1' ? { ...value, job: { id: 'j1', state: 'invalid_response' } } : value
+  }
+  await openMeeting(b)
+  assert.ok(screen.getByRole('button', { name: 'Retry transcription' }))
+  assert.equal(screen.queryByRole('button', { name: 'Recover saved response' }), null)
+  assert.equal(mutations(b.calls).length, 0)
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }
