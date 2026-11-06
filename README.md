@@ -53,7 +53,7 @@ See [feasibility evidence and remaining gates](docs/feasibility.md).
 
 ## Generate notes
 
-Review the speakers, then copy the meeting’s notes request into a Hermes chat:
+Review the speakers, then choose **Start summarization session** in the recording’s **Notes** tab. Send the prepared request in the new Hermes chat:
 
 > Use the meeting_notes:analyze skill to generate and save sourced notes for meeting MEETING_ID.
 
@@ -85,7 +85,7 @@ Chunks returning no words receive a visible audio-review warning, never an asser
 
 Each meeting defaults to its importing profile. **Analysis profile** saves a different existing Hermes profile on the same host. Selecting it explicitly grants that profile access to this meeting’s transcript, notes and action items, and permission to save sourced notes and action proposals back. Audio, raw responses, corrections and notes stay in the importing profile's database; no profile credentials are read or copied. The analysis profile must have Meeting Notes enabled and its own working model credentials.
 
-Use **Copy request and open profile**, then paste the request into that profile's new Hermes chat. The request includes `source_profile`, which the skill passes on every transcript read and notes save. A new chat uses the profile's normal configuration; any model override you make in chat remains your choice. Existing conversations are not interrupted and no model call runs just from changing the selector. Return to the importing profile's Meeting Notes view to review saved notes.
+Use **Start summarization session** in the **Notes** tab to open a new chat in that profile with the notes request filled in, then send it. The button remains available for regenerating existing notes. Older hosts without composer support, or hosts where filling the draft fails, try to copy the request for you to paste; **Copy request** is also available as a manual fallback. The request includes `source_profile`, which the skill passes on every transcript read and notes save. A new chat uses the profile's normal configuration; any model override you make in chat remains your choice. Existing conversations are not interrupted and no model call runs just from changing the selector. Return to the importing profile's Meeting Notes view to review saved notes.
 
 The plugin verifies the actual host-bound profile on each read and again inside the notes-save transaction. Changing the selected profile invalidates old in-flight notes, even if you switch away and back. Earlier analyses retain their original profile attribution. Unavailable profiles are not silently replaced. The open-chat action uses the importing connection's exact route; ambiguous or unsupported routes produce an error. A single-profile Webapp deployment cannot open another profile through that server: use a Hermes host that serves the selected profile, with access to the same profile storage. Cross-machine meeting transfer is not implemented.
 
@@ -96,7 +96,7 @@ Open **Action Items** next to **Notes**. New notes runs extract proposals automa
 For a proposal you want to act on:
 
 1. Choose **Hand off to Hermes**, select **My calendar** or **My to-do list**, and add confirmed details or instructions.
-2. **Prepare handoff** saves the request. Use **Copy request and open profile**, then paste it into that profile's chat. The profile needs the appropriate connected tools; the plugin has no provider-specific adapter or credentials.
+2. **Prepare handoff** saves the request. Use **Start Hermes session**, then review and send the prepared request in that profile’s chat (or use Copy request). The profile needs the appropriate connected tools; the plugin has no provider-specific adapter or credentials.
 3. Hermes claims that handoff once, checks the destination and missing details, performs the authorized action through its normal tools and approvals, then calls `meeting_action_callback` with the outcome. The tab refreshes to show what was done, the provider, external ID and any returned link. “Handoff completed” means a task was added or event scheduled, not that the underlying work was finished.
 
 If details or access are missing, Hermes reports **Needs details or access** before making an external change. Add the requested information and press **Continue with these details**, then send the updated handoff request to Hermes. Configure credentials privately through Hermes, never in the instructions box. Requests that have not started, or that reported missing details before any external write, can be cancelled. The claiming chat receives an attempt token; another chat cannot declare that attempt failed or safe to retry while its write may still be running. An interrupted or timed-out operation stays in progress or uncertain until Hermes looks up the actual outcome; reopening its request does not authorize a duplicate write.

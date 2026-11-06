@@ -254,6 +254,7 @@ test('notes show review warnings, unconfirmed dates, saved-source playback and h
   await openMeeting(b)
   fireEvent.click(screen.getByRole('tab', { name: /Notes/ }))
   assert.ok(screen.getByText('Notes may be out of date'))
+  assert.ok(screen.getByRole('button', { name: 'Start summarization session' }))
   assert.equal(screen.getByLabelText('Notes request to paste into Hermes chat').value, 'Use the meeting_notes:analyze skill to generate and save sourced notes for meeting m1.')
   assert.ok(screen.getByText('Sam'))
   assert.ok(screen.getByText('Speaker of the commitment'))
@@ -442,17 +443,103 @@ test('combine selection can refresh revisions without losing order', async () =>
   assert.deepEqual(calls[1].body.sources,[{id:'part2',active:'tr2',revision:3},{id:'part1',active:'tr1',revision:3}])
 })
 
-test('copy and open retains copied request when profile routing is unavailable', async () => {
+test('starting a session fails closed when profile routing is unavailable', async () => {
   const original=Object.getOwnPropertyDescriptor(globalThis,'navigator')
   const copied=[]
   Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>copied.push(text)}}})
   try {
     render(React.createElement(plugin.RequestBox,{meeting:{id:'m1',owner_profile:'default',analysis_profile:'research'},hasNotes:false,
       hostApi:{profileRoutes:async()=>[],newChat:()=>assert.fail('Unavailable route must not open a chat')}}))
-    fireEvent.click(screen.getByRole('button',{name:'Copy request and open profile'}))
-    await screen.findByText(/Request copied\. The selected profile is not uniquely reachable/)
+    fireEvent.click(screen.getByRole('button',{name:'Start summarization session'}))
+    await screen.findByText(/The selected profile is not uniquely reachable/)
     assert.equal(copied.length,1)
-    assert.match(copied[0],/source_profile="default"/)
+  } finally {
+    if(original) Object.defineProperty(globalThis,'navigator',original)
+    else delete globalThis.navigator
+  }
+})
+
+test('new summarization session fills the selected profile', async () => {
+  const calls=[]
+  const route={connectionId:'host-a',targetProfile:'research',mode:'remote'}
+  let finishRoute
+  const hostApi={
+    state:{connectionId:{get:()=> 'host-a'}},
+    profileRoutes:()=>new Promise(resolve=>{finishRoute=()=>resolve([route])}),
+    newChat:target=>calls.push(['open',target]),
+    composer:{insertText:async (...args)=>{calls.push(['insert',...args]);return true}},
+    notify:message=>calls.push(['notify',message])
+  }
+  render(React.createElement(plugin.RequestBox,{meeting:{id:'m1',owner_profile:'default',analysis_profile:'research'},hostApi}))
+  fireEvent.click(screen.getByRole('button',{name:'Start summarization session'}))
+  assert.equal(screen.getByRole('button',{name:'Opening…'}).disabled,true)
+  await React.act(async()=>finishRoute())
+  await screen.findByText('Summarization session ready. Send the request to generate and save notes.')
+  assert.deepEqual(calls[0],['open',route])
+  assert.equal(calls[1][0],'insert')
+  assert.equal(calls[1][1],'new')
+  assert.match(calls[1][2],/meeting m1.*source_profile="default".*profile "research"/)
+  assert.equal(calls.length,3)
+})
+
+test('older hosts open a new session with a clipboard fallback', async () => {
+  const original=Object.getOwnPropertyDescriptor(globalThis,'navigator')
+  const copied=[],opened=[]
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>copied.push(text)}}})
+  try {
+    render(React.createElement(plugin.RequestBox,{meeting:{id:'m1'},hostApi:{newChat:target=>opened.push(target)}}))
+    fireEvent.click(screen.getByRole('button',{name:'Start summarization session'}))
+    await screen.findByText('New session opened. Paste the copied request and send it to generate notes.')
+    assert.equal(opened.length,1)
+    assert.equal(copied[0],plugin.notesRequest({id:'m1'}))
+  } finally {
+    if(original) Object.defineProperty(globalThis,'navigator',original)
+    else delete globalThis.navigator
+  }
+})
+
+test('failed composer insertion reports recovery through a host notification', async () => {
+  const notices=[]
+  render(React.createElement(plugin.RequestBox,{meeting:{id:'m1'},hostApi:{
+    newChat:()=>{},composer:{insertText:async()=>false},notify:notice=>notices.push(notice)
+  }}))
+  fireEvent.click(screen.getByRole('button',{name:'Start summarization session'}))
+  await waitFor(()=>assert.equal(notices.length,1),{timeout:15000})
+  assert.equal(notices[0].kind,'error')
+  assert.match(notices[0].message,/Return to Notes/)
+})
+
+test('draft fill waits for mounting and retries a late fresh-draft reset', async () => {
+  let tick=0, draft=null, inserts=0
+  const hostApi={composer:{
+    getDraft:async address=>{assert.equal(address,'new');return draft},
+    insertText:async (address,text)=>{assert.equal(address,'new');if(tick<3)return false;inserts++;draft=text;return true}
+  }}
+  const filled=await plugin.fillNotesDraft(hostApi,'notes',null,{attempts:8,wait:async()=>{tick++;if(tick===4)draft=null}})
+  assert.equal(filled,true)
+  assert.equal(inserts,2)
+  assert.equal(draft,'notes')
+})
+
+test('draft fill waits for profile activation and preserves user text', async () => {
+  let profile='default', inserts=0, ticks=0, reads=0
+  const hostApi={state:{profile:{get:()=>profile}},composer:{getDraft:async()=>{reads++;assert.equal(profile,'research');return 'My own draft'},insertText:async()=>{inserts++;return true}}}
+  assert.equal(await plugin.fillNotesDraft(hostApi,'notes',{targetProfile:'research'},{attempts:4,wait:async()=>{if(++ticks===3)profile='research'}}),false)
+  assert.equal(ticks,3)
+  assert.equal(reads,1)
+  assert.equal(inserts,0)
+})
+
+test('failed draft fill copies the request on a modern host', async () => {
+  const original=Object.getOwnPropertyDescriptor(globalThis,'navigator')
+  const copied=[]
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>copied.push(text)}}})
+  try {
+    render(React.createElement(plugin.RequestBox,{meeting:{id:'m1'},hostApi:{newChat:()=>{},
+      composer:{getDraft:async()=> 'User draft',insertText:async()=>assert.fail('Must preserve user draft')}}}))
+    fireEvent.click(screen.getByRole('button',{name:'Start summarization session'}))
+    await screen.findByText('New session opened. Paste the copied request and send it to generate notes.')
+    assert.deepEqual(copied,[plugin.notesRequest({id:'m1'})])
   } finally {
     if(original) Object.defineProperty(globalThis,'navigator',original)
     else delete globalThis.navigator
@@ -595,6 +682,19 @@ test('recording storage requires review and sends the exact reviewed policy', as
   await waitFor(() => assert.equal(writes.length, 1))
   assert.deepEqual(writes[0], { apply_current_settings: true, settings: policy })
   await screen.findByText('Storage: queued')
+})
+
+test('action handoff session fills its own request and keeps its selected profile', async () => {
+  const route = {connectionId:'host-a',targetProfile:'research',mode:'remote'}, inserted=[]
+  const request = plugin.handoffRequest({id:'m1',owner_profile:'default'}, {id:'handoff-test',profile:'research'})
+  const hostApi={state:{connectionId:{get:()=> 'host-a'}},profileRoutes:async()=>[route],
+    newChat:target=>assert.equal(target,route),composer:{insertText:async(address,text)=>{inserted.push([address,text]);return true}}}
+  render(React.createElement(plugin.RequestBox,{meeting:{id:'m1',owner_profile:'default',analysis_profile:'research'},requestText:request,title:'Send this handoff to Hermes',hostApi}))
+  fireEvent.click(screen.getByRole('button',{name:'Start Hermes session'}))
+  await screen.findByText('Hermes session ready. Review and send the prepared request.')
+  assert.deepEqual(inserted,[['new',request]])
+  assert.match(request,/handoff-test/)
+  assert.doesNotMatch(request,/meeting_notes:analyze/)
 })
 
 let failed = 0

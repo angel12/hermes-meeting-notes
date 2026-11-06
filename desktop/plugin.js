@@ -911,24 +911,80 @@ export function AnalysisProfile({ meeting, rest, act, busy }) {
     missing && h(Callout, { tone: 'warn', role: 'status' }, 'The saved profile is unavailable. Select an existing profile; analysis will not silently use another one.'))
 }
 
+// newChat returns before React mounts/resets the fresh composer. Only address
+// 'new', wait for the selected gateway, and verify the text survived that reset.
+export async function fillNotesDraft(hostApi, text, route, {
+  wait = () => new Promise(resolve => setTimeout(resolve, 100)), attempts = 100
+} = {}) {
+  if (!hostApi.composer?.insertText) return false
+  const initialHash = globalThis.location?.hash
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await wait()
+    if (globalThis.location?.hash !== initialHash) return false
+    if (route && hostApi.state?.profile && hostApi.state.profile.get() !== route.targetProfile) continue
+    if (route && hostApi.state?.connectionId && hostApi.state.connectionId.get() !== route.connectionId) continue
+    const draft = await hostApi.composer.getDraft?.('new')
+    if (draft === text) return true
+    if (draft) return false // Never append to text the user has started typing.
+    if (!await hostApi.composer.insertText('new', text)) continue
+    await wait()
+    if (!hostApi.composer.getDraft) return true
+    const saved = await hostApi.composer.getDraft('new')
+    if (saved === text) return true
+    if (saved) return false
+  }
+  return false
+}
+
+async function copyNotesRequest(text) {
+  try {
+    await globalThis.navigator.clipboard.writeText(text)
+    return true
+  } catch { return false }
+}
+
 export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, title, description, inputLabel, hint }) {
   const text = requestText || notesRequest(meeting)
   const ref = useRef(null)
   const [copied, setCopied] = useState('')
   const [opening, setOpening] = useState(false)
   const connection = useRef(hostApi?.state?.connectionId?.get?.() ?? null)
+  const starting = useRef(false)
   const openProfile = async () => {
+    if (starting.current) return
+    starting.current = true
     setOpening(true)
+    setCopied('')
+    let opened = false
     let copiedRequest = false
     try {
-      if (!globalThis.navigator?.clipboard?.writeText) throw new Error('Copy the request below, then open a Hermes chat in the selected profile.')
-      await globalThis.navigator.clipboard.writeText(text)
-      copiedRequest = true
-      const route = await analysisChatRoute(hostApi, meeting.analysis_profile || meeting.owner_profile, connection.current)
-      hostApi.newChat(route)
-      setCopied('Request copied. Paste it into the new profile chat. Results save back to the importing profile.')
-    } catch (e) { setCopied(`${copiedRequest ? 'Request copied. ' : ''}${errorText(e)}`) }
-    finally { setOpening(false) }
+      const profile = meeting.analysis_profile || meeting.owner_profile
+      if (!hostApi?.newChat) throw new Error('This Hermes version cannot open a session. Copy the request below into a new chat.')
+      const route = profile ? await analysisChatRoute(hostApi, profile, connection.current) : undefined
+      if (!hostApi.composer?.insertText) copiedRequest = await copyNotesRequest(text)
+      if (!hostApi.composer?.insertText && !copiedRequest) {
+        throw new Error('Copy the request below, then open a new Hermes chat. This host cannot fill the chat automatically.')
+      }
+      await hostApi.newChat(route)
+      opened = true
+      const inserted = await fillNotesDraft(hostApi, text, route)
+      if (!inserted && !copiedRequest) copiedRequest = await copyNotesRequest(text)
+      const message = inserted
+        ? (requestText ? 'Hermes session ready. Review and send the prepared request.' : 'Summarization session ready. Send the request to generate and save notes.')
+        : copiedRequest
+          ? (requestText ? 'New session opened. Paste the copied request, review it and send.' : 'New session opened. Paste the copied request and send it to generate notes.')
+          : `New session opened, but the request could not be filled. Return to ${requestText ? 'Action Items' : 'Notes'} to copy the request.`
+      setCopied(message)
+      hostApi.notify?.({ kind: inserted || copiedRequest ? 'info' : 'error', message })
+    } catch (e) {
+      if (!copiedRequest) copiedRequest = await copyNotesRequest(text)
+      const message = `${copiedRequest ? 'Request copied. Paste it into a new chat in the selected profile. ' : ''}${errorText(e)}`
+      setCopied(message)
+      if (opened) hostApi.notify?.({ kind: 'error', message })
+    } finally {
+      starting.current = false
+      setOpening(false)
+    }
   }
   const copy = async () => {
     try {
@@ -944,8 +1000,8 @@ export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, tit
     h('div', { className: 'mn-spread' },
       h('strong', null, title || (hasNotes ? 'Regenerate notes in Hermes chat' : 'Generate notes in Hermes chat')),
       btn({ size: 'xs', onClick: copy }, 'Copy request'),
-      meeting.owner_profile && btn({ size: 'xs', onClick: openProfile, disabled: opening }, opening ? 'Opening…' : 'Copy request and open profile')),
-    h('p', { className: 'mn-muted' }, description || `The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` Analyze in profile ${meeting.analysis_profile || meeting.owner_profile}; notes remain with the importing profile ${meeting.owner_profile}. The plugin must be enabled in the analysis profile.` : ''}`),
+      btn({ size: 'sm', variant: 'default', onClick: openProfile, disabled: opening }, opening ? 'Opening…' : requestText ? 'Start Hermes session' : 'Start summarization session')),
+    h('p', { className: 'mn-muted' }, description || `Start a new session, then send the prepared request. The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` Analyze in profile ${meeting.analysis_profile || meeting.owner_profile}; notes remain with the importing profile ${meeting.owner_profile}. The plugin must be enabled in the analysis profile.` : ''}`),
     h('input', { ref, className: 'mn-input', readOnly: true, value: text, 'aria-label': inputLabel || 'Notes request to paste into Hermes chat', onFocus: e => e.target.select(), style: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 } }),
     h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' }, copied || hint || 'Review speakers first. The skill reads the current transcript and checks its revision before saving.'))
 }
@@ -1004,7 +1060,7 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
   if (!meeting.active) return h('p', { className: 'mn-muted' }, 'Notes can be generated after the transcript is ready.')
   const counts = analysis ? KINDS.map(k => ({ ...k, n: analysis.items.filter(i => i.kind === k.kind).length })).filter(k => k.n) : []
   return h('div', { className: 'mn-section' },
-    (!latest || latest.needs_review) && !historical && h(RequestBox, { meeting, hasNotes: Boolean(latest) }),
+    h(RequestBox, { key: `${meeting.id}:${meeting.analysis_profile || meeting.owner_profile || ''}`, meeting, hasNotes: Boolean(latest) }),
     versions.length > 0 && h('div', { className: 'mn-toolbar' },
       h(Field, { label: 'Notes version' },
         h('select', { className: 'mn-input', value: analysis?.id || '', disabled: loading, onChange: e => choose(e.target.value) },
@@ -1033,10 +1089,7 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
           k.note && h('p', { className: 'mn-faint' }, k.note),
           k.kind === 'commitment' && h('p', { className: 'mn-faint' }, 'Owners and due dates are proposals from the transcript and are not confirmed. Nothing is sent to a task manager.'),
           ...items.map(item => h(NoteItem, { key: item.id, item, analysis, participants, play, showSegment, liveIds })))
-      })),
-    latest && !latest.needs_review && !historical && h('details', null,
-      h('summary', { className: 'mn-faint', style: { cursor: 'pointer' } }, 'Regenerate notes'),
-      h('div', { style: { marginTop: 8 } }, h(RequestBox, { meeting, hasNotes: true }))))
+      })))
 }
 
 export function actionsRequest(meeting) {
