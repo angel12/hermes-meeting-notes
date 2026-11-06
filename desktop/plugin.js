@@ -526,6 +526,92 @@ export function UploadForm({ rest, onUploaded, onBusy }) {
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
+export function StorageSettings({ rest }) {
+  const [value, setValue] = useState(null), [error, setError] = useState(''), [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false), [confirmed, setConfirmed] = useState(false)
+  useEffect(() => { let live = true
+    rest('/storage-settings').then(v => { if (live) setValue(v) }).catch(e => { if (live) setError(errorText(e)) })
+    return () => { live = false }
+  }, [rest])
+  const save = async e => {
+    e.preventDefault(); setSaving(true); setError(''); setMessage('')
+    try {
+      const v = await rest('/storage-settings', { method: 'PUT', body: { directory: value.directory.trim(), compress_playback: value.compress_playback, archive_mode: value.archive_mode } })
+      setValue(v); setConfirmed(false)
+      setMessage('Storage settings saved. New uploads use this location. Compression runs after future transcriptions finish. Existing recordings change only when you apply these settings in their Audio storage panel.')
+    } catch (e) { setError(errorText(e)) } finally { setSaving(false) }
+  }
+  return h('section', { className: 'mn-card', 'aria-label': 'Audio storage settings' },
+    h('h3', null, 'Audio storage'),
+    h('p', { className: 'mn-muted' }, 'Choose a directory on the Hermes backend machine. In Webapp this is the server, not your browser’s computer. Docker must have the directory mounted. Notes and the database stay in the importing profile.'),
+    value && h('form', { onSubmit: save },
+      h(Field, { label: 'Audio directory on Hermes host', hint: 'Existing absolute path. Leave blank to use profile storage. Each profile gets a separate managed subfolder.' },
+        h('input', { className: 'mn-input', value: value.directory, disabled: saving, onChange: e => { setMessage(''); setValue({ ...value, directory: e.target.value }) } })),
+      h('p', { className: 'mn-faint' }, `Current saved location: ${value.managed_path}`),
+      h('label', { className: 'mn-row' }, h('input', { type: 'checkbox', checked: value.compress_playback, disabled: saving || value.archive_mode === 'opus',
+        onChange: e => setValue({ ...value, compress_playback: e.target.checked }) }), 'Losslessly compress the playback copy (FLAC)'),
+      h(Field, { label: 'Stored recording', hint: 'The original source file on your recorder/computer is never modified.' },
+        h('select', { className: 'mn-input', value: value.archive_mode, disabled: saving, onChange: e => { setConfirmed(false); setValue({ ...value, archive_mode: e.target.value, compress_playback: e.target.value === 'opus' || value.compress_playback }) } },
+          h('option', { value: 'original' }, 'Keep uploaded original'),
+          h('option', { value: 'opus' }, 'Smaller speech archive · mono Opus, 48 kb/s target'))),
+      value.archive_mode === 'opus' && h(Fragment, null,
+        h(Callout, { tone: 'warn' }, 'This replaces the plugin’s stored original after verification. Opus is lossy and mono; original stereo detail and metadata cannot be recovered from it. An exact lossless playback copy is kept for citations. Keep your source recording separately if needed.'),
+        h('label', { className: 'mn-row' }, h('input', { type: 'checkbox', checked: confirmed, disabled: saving, onChange: e => setConfirmed(e.target.checked) }), 'Allow replacement of stored originals after future transcriptions')),
+      btn({ type: 'submit', disabled: saving || (value.archive_mode === 'opus' && !confirmed) }, saving ? 'Saving…' : 'Save storage settings')),
+    message && h('p', { role: 'status', className: 'mn-muted' }, message),
+    error && h(Callout, { tone: 'error', role: 'alert' }, error))
+}
+
+export function RecordingStorage({ meeting, rest }) {
+  const [value, setValue] = useState(null), [policy, setPolicy] = useState(null), [error, setError] = useState('')
+  const [busy, setBusy] = useState(false), [review, setReview] = useState(false)
+  const alive = useRef(true), serial = useRef(0), locked = useRef(false)
+  const load = useCallback(async () => {
+    const seq = ++serial.current
+    try {
+      const v = await rest(`/meetings/${meeting.id}/storage`)
+      if (alive.current && seq === serial.current) setValue(v)
+    } catch (e) { if (alive.current && seq === serial.current) setError(errorText(e)) }
+  }, [rest, meeting.id])
+  useEffect(() => { alive.current = true; setValue(null); setReview(false); load()
+    const timer = setInterval(() => { if (!locked.current && !globalThis.document?.hidden) load() }, POLL_MS)
+    return () => { alive.current = false; serial.current++; clearInterval(timer) }
+  }, [load])
+  const reviewSettings = async () => {
+    setError(''); setBusy(true)
+    try { const p = await rest('/storage-settings'); if (alive.current) { setPolicy(p); setReview(true) } }
+    catch (e) { if (alive.current) setError(errorText(e)) } finally { if (alive.current) setBusy(false) }
+  }
+  const apply = async () => {
+    if (locked.current) return
+    locked.current = true; serial.current++; setBusy(true); setError('')
+    try {
+      await rest(`/meetings/${meeting.id}/storage`, { method: 'POST', body: { apply_current_settings: true, settings: policy } })
+      if (alive.current) { setReview(false); await load() }
+    } catch (e) { if (alive.current) setError(errorText(e)) }
+    finally { locked.current = false; if (alive.current) setBusy(false) }
+  }
+  if (meeting.recordings?.length) return h('p', { className: 'mn-faint' }, 'Audio storage is managed on each original recording. Combined meetings share those files.')
+  const running = ['queued', 'running'].includes(value?.job?.state)
+  const size = n => n == null ? 'unavailable' : `${(n / 1048576).toFixed(1)} MiB`
+  return h('details', { className: 'mn-card' }, h('summary', null, 'Audio storage'),
+    value && !value.combined && h(Fragment, null,
+      h('p', { className: 'mn-faint' }, value.directory),
+      h('p', null, `${value.archive_mode === 'opus' ? 'Opus speech archive' : 'Uploaded original'}: ${size(value.recording_bytes)} · Playback (${value.playback_format}): ${size(value.playback_bytes)}`),
+      value.job && h('p', { role: 'status' }, `Storage: ${value.job.state}${value.job.result ? ` · ${(value.job.result.saved_bytes / 1048576).toFixed(1)} MiB saved` : ''}`),
+      value.job?.error && h(Callout, { tone: 'error' }, value.job.error),
+      value.job?.cleanup_pending && h('p', { className: 'mn-faint' }, 'The verified replacement is in use. Older copies await cleanup when their storage is available.'),
+      !review && btn({ disabled: busy || running || meeting.job.state !== 'completed', onClick: reviewSettings }, 'Review move / compression'),
+      review && policy && h('div', null,
+        h('p', null, `Destination: ${policy.managed_path}`),
+        h('p', null, `Playback: ${policy.compress_playback ? 'lossless FLAC' : 'WAV'}. Recording: ${policy.archive_mode === 'opus' ? 'mono Opus speech archive (lossy)' : 'uploaded original'}.`),
+        policy.archive_mode === 'opus' && h(Callout, { tone: 'warn' }, 'Applying this replaces the plugin’s stored original after verification. The source file on your computer is untouched. This cannot restore or preserve the original’s stereo detail or metadata.'),
+        h('p', { className: 'mn-faint' }, 'Files are copied and checked before switching locations and removing old managed copies. Playback and combined meetings keep their timeline. Keep both locations mounted until cleanup finishes.'),
+        btn({ disabled: busy || running, onClick: apply }, 'Apply reviewed storage settings'),
+        btn({ variant: 'ghost', disabled: busy, onClick: () => setReview(false) }, 'Cancel'))),
+    error && h(Callout, { tone: 'error', role: 'alert' }, error))
+}
+
 export function SettingsForm({ rest }) {
   const [settings, setSettings] = useState(null)
   const [error, setError] = useState('')
@@ -561,10 +647,11 @@ export function SettingsForm({ rest }) {
       h('div', { className: 'mn-row' }, h(Button, { type: 'submit', size: 'sm', disabled: saving }, saving ? 'Saving…' : 'Save settings')),
       h('p', { role: 'status', 'aria-live': 'polite', className: 'mn-muted' }, saved)),
     error && h(Callout, { tone: 'error', role: 'alert' }, error),
+    h(StorageSettings, { rest }),
     h(Callout, { tone: 'info', title: 'Host requirements' },
       h('ul', { className: 'mn-steps' },
         h('li', null, 'Set the API key as MEETING_NOTES_ASR_KEY in Hermes secrets. It is read on the host and never sent to this page.'),
-        h('li', null, 'ffmpeg must be installed on the Hermes host.'),
+        h('li', null, 'ffmpeg and ffprobe must be installed on the Hermes host; optional archives need FLAC and libopus support.'),
         h('li', null, 'Use a single-profile host. Run one host per transcription server for now.'))))
 }
 
@@ -1008,7 +1095,7 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
       inputLabel: 'Handoff request to paste into Hermes chat',
       hint: 'Hermes reads this saved handoff and records its outcome here. Copying alone does not execute it.',
       description: handoff.state === 'pending' ? 'Paste this request into the selected profile chat. Hermes uses its available calendar or to-do tools, asks for missing details, and reports the actual outcome here.' : 'The same handoff ID preserves its history. Hermes must check the existing outcome instead of starting another external write.' }),
-    handoff.state === 'pending' && btn({ variant: 'ghost', disabled: busy, onClick: () => update(handoff, 'cancel') }, 'Cancel handoff'),
+    ['pending', 'needs_input'].includes(handoff.state) && btn({ variant: 'ghost', disabled: busy, onClick: () => update(handoff, 'cancel') }, 'Cancel handoff'),
     handoff.state === 'needs_input' && h('form', { onSubmit: e => { e.preventDefault(); update(handoff, 'continue') } },
       h(Field, { label: 'Additional handoff details', hint: 'Confirm the calendar/list, timing, attendees or other details Hermes requested. Configure service access privately in Hermes.' },
         h('textarea', { className: 'mn-input', maxLength: 4000, value: details[handoff.id] ?? handoff.instructions,
@@ -1089,6 +1176,7 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
       h('p', { className: 'mn-muted' }, 'Transcript snapshots in playback order. Match speakers across recordings before generating notes. Later edits to the originals do not change this meeting.'),
       h('ol', null, ...meeting.recordings.map(r => h('li', { key: r.part }, `${r.title} · starts ${clock(r.offset)} · source revision ${r.revision}`)))),
     h(StatusPanel, { meeting, busy, act }),
+    h(RecordingStorage, { meeting, rest }),
     h(Player, { playing, onClose: closePlayer }),
     !ready ? h('div', { className: 'mn-card', 'aria-busy': stateInfo(meeting.job.state).active ? true : undefined },
       h('p', { className: 'mn-muted' }, stateInfo(meeting.job.state).active ? 'The transcript will appear here when transcription finishes.' : 'No transcript is available for this meeting.'),

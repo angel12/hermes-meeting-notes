@@ -125,7 +125,7 @@ def create_handoff(svc, meeting, action_id, actions_id, revision, destination, i
         m = db.execute('SELECT active,revision FROM meetings WHERE id=?', (meeting,)).fetchone()
         selected = svc.check_analysis_profile(db, meeting)
         record = latest(db, meeting)
-        if (type(revision) is not int or m['revision'] != revision or selected != actor or not record
+        if (type(revision) is not int or m['revision'] != revision or snapshot['revision'] != revision or selected != actor or not record
                 or record['id'] != actions_id or record['transcript'] != m['active'] or record['revision'] != revision):
             raise ValueError('Action items or profile changed; regenerate and review before handing off')
         item = next((i for i in record['items'] if i['id'] == action_id), None)
@@ -137,7 +137,7 @@ def create_handoff(svc, meeting, action_id, actions_id, revision, destination, i
         item = next(i for i in projected['items'] if i['id'] == action_id)
         sources = {c['segment_id']: record['sources'][c['segment_id']] for c in item['citations']}
         frozen = {'item': item, 'sources': sources, 'title': snapshot['title'], 'date': snapshot['date'],
-                  'timezone': snapshot['timezone'], 'instructions': instructions, 'destination': destination}
+                  'timezone': snapshot['timezone'], 'original_instructions': instructions, 'destination': destination}
         ident = uid()
         db.execute('INSERT INTO action_handoffs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (ident, meeting, action_id, request_id, digest, actor, m['active'], revision, destination,
@@ -156,8 +156,8 @@ def user_update(svc, meeting, handoff_id, version, operation, instructions=''):
         if not row or type(version) is not int or row['version'] != version:
             raise ValueError('Handoff changed; refresh before updating')
         if operation == 'cancel':
-            if row['state'] != 'pending':
-                raise ValueError('Only a handoff that has not started can be cancelled')
+            if row['state'] not in ('pending', 'needs_input'):
+                raise ValueError('Only an unstarted handoff or one waiting for details can be cancelled')
             state = 'cancelled'
         else:
             if row['state'] != 'needs_input':
@@ -170,7 +170,7 @@ def user_update(svc, meeting, handoff_id, version, operation, instructions=''):
     return {'status': state}
 
 
-def callback(svc, meeting, handoff_id, operation, version=None, result=None):
+def callback(svc, meeting, handoff_id, operation, version=None, result=None, attempt_token=None):
     """Claim once before acting; callbacks may record late results after corrections."""
     if operation not in ('read', 'begin', 'report'):
         raise ValueError('Choose read, begin or report')
@@ -201,11 +201,16 @@ def callback(svc, meeting, handoff_id, operation, version=None, result=None):
                 raise ValueError('Meeting, action or profile changed; ask the user to review before acting')
             if row['state'] != 'pending':
                 return {'status': row['state'], 'version': row['version'], 'may_execute': False}
+            token = uid()
+            db.execute('INSERT OR REPLACE INTO handoff_claims VALUES(?,?)', (handoff_id, token))
             db.execute("UPDATE action_handoffs SET state='running',version=version+1,updated=? WHERE id=?", (time.time(), handoff_id))
-            return {'status': 'running', 'version': version + 1, 'may_execute': True}
+            return {'status': 'running', 'version': version + 1, 'may_execute': True, 'attempt_token': token}
         schema_check(RESULT_SCHEMA, result)
         if row['state'] not in ('running', 'unknown'):
             raise ValueError('Only started or uncertain handoffs can receive an outcome')
+        claim = db.execute('SELECT token FROM handoff_claims WHERE handoff=?', (handoff_id,)).fetchone()
+        if result['status'] in ('failed', 'needs_input') and (not claim or attempt_token != claim[0]):
+            raise ValueError('Only the chat that claimed this attempt can confirm no external write; reconcile to completed or unknown instead')
         if result['status'] == 'completed' and (not result['provider'].strip() or not result['external_id'].strip()):
             raise ValueError('A completed handoff needs the real provider and external task/event ID')
         if not result['summary'].strip():

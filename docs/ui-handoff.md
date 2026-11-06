@@ -43,3 +43,8 @@ Deployment update: the polished shared UI, combined-recording form and profile s
 ## Action Items tab
 
 Action Items sits beside Notes and uses the same shared plugin in Desktop and Webapp. Users generate proposals in Hermes, review quoted evidence, choose a calendar/to-do destination, then explicitly prepare and copy a handoff into the selected profile chat. The panel polls persisted results and shows needs-input, uncertain, completed and failed outcomes with provider IDs/links. A task being added is distinct from its work being finished. Older unmatched handoffs remain visible after regeneration. Synthetic UI tests cover a lost prepare response with the same request ID, clipboard handoff scope, completed-result refresh, stale proposal gating and retained uncertain history. Visual acceptance and a real connected-service round trip remain open.
+
+
+## Audio storage controls
+
+Transcription settings contains Audio storage: a host directory field, optional lossless FLAC playback, and optional mono Opus archive with explicit original-replacement acknowledgement. Each original recording has an Audio storage disclosure with formats, sizes and maintenance status. Review move/compression loads the current policy and requires an explicit Apply; the API compares that exact reviewed policy before enqueueing. Combined meetings point users to their original recordings. Synthetic UI checks cover consent, host-versus-browser path wording, review before mutation, and the exact policy payload. No native filesystem picker or browser-specific filesystem API is used.

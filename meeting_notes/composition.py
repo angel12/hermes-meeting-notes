@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .store import atomic_write, uid
 from .transcript import effective
+from . import storage, audio as audio_files
 
 
 def combine(svc, request_id, title, date, timezone, sources):
@@ -51,12 +52,9 @@ def combine(svc, request_id, title, date, timezone, sources):
                 raise ValueError('Choose the original recordings, not an already combined meeting')
             if m['active'] != source['active'] or m['revision'] != source['revision']:
                 raise ValueError('A source transcript changed; refresh the selection before combining')
-            path = svc.root/'audio'/f'{m["id"]}.wav'
+            path = storage.playback_path(svc, db, m['id'])
             try:
-                with wave.open(str(path),'rb') as audio:
-                    if (audio.getnchannels(),audio.getsampwidth(),audio.getframerate(),audio.getcomptype()) != (1,2,16000,'NONE'):
-                        raise ValueError('A prepared recording has an unsupported audio format')
-                    count = audio.getnframes()
+                count = audio_files.pcm_info(path)
             except (OSError, wave.Error, EOFError):
                 raise ValueError('A source recording is not available for playback') from None
             original = json.loads(db.execute('SELECT segments FROM transcripts WHERE id=?',(m['active'],)).fetchone()[0])
@@ -97,6 +95,13 @@ def combine(svc, request_id, title, date, timezone, sources):
 
 
 def audio_window(svc, meeting, start, duration):
+    # Serialize file pointer reads with verified migration cleanup.
+    with svc.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        return _audio_window(svc, db, meeting, start, duration)
+
+
+def _audio_window(svc, db, meeting, start, duration):
     from .audio import window
     if (any(isinstance(v,bool) or not isinstance(v,(float,int)) or not math.isfinite(v) for v in (start,duration))
             or start < 0 or not 0 < duration <= 30):
@@ -104,7 +109,7 @@ def audio_window(svc, meeting, start, duration):
     snapshot = svc.get(meeting)
     parts = snapshot['recordings']
     if not parts:
-        path = svc.root/'audio'/f'{meeting}.wav'
+        path = storage.playback_path(svc, db, meeting)
         if not path.exists():
             raise ValueError('Audio is not prepared yet')
         return window(path,start,duration)
@@ -117,14 +122,12 @@ def audio_window(svc, meeting, start, duration):
             count = part['frames']
             left, right = max(begin,offset), min(end,offset+count)
             if left < right:
-                path = svc.root/'audio'/f'{part["meeting_id"]}.wav'
+                path = storage.playback_path(svc, db, part['meeting_id'])
                 try:
-                    with wave.open(str(path),'rb') as src:
-                        src.setpos(left-offset)
-                        audio = src.readframes(right-left)
-                        if len(audio) != (right-left)*2:
-                            raise ValueError('A source recording has changed; playback is unavailable')
-                        dst.writeframes(audio)
+                    audio = audio_files.read_pcm(path, left-offset, right-left)
+                    if len(audio) != (right-left)*2:
+                        raise ValueError('A source recording has changed; playback is unavailable')
+                    dst.writeframes(audio)
                 except (OSError, wave.Error, EOFError):
                     raise ValueError('A source recording is unavailable') from None
             offset += count

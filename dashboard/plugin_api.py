@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from meeting_notes import runtime
 from meeting_notes.service import CHUNK
 from meeting_notes import actions
+from meeting_notes import storage
 
 router = APIRouter()
 
@@ -35,6 +36,30 @@ def ping():
 @router.get('/settings')
 def settings():
     return call(lambda:runtime.service().settings())
+
+
+@router.get('/storage-settings')
+def storage_settings():
+    return call(lambda:storage.settings(runtime.service()))
+
+
+@router.put('/storage-settings')
+def configure_storage(body: dict):
+    return call(lambda:storage.configure(runtime.service(), body))
+
+
+@router.get('/meetings/{ident}/storage')
+def recording_storage(ident: str):
+    return call(lambda:storage.status(runtime.service(), ident))
+
+
+@router.post('/meetings/{ident}/storage')
+def apply_recording_storage(ident: str, body: dict):
+    if set(body) != {'apply_current_settings', 'settings'} or body['apply_current_settings'] is not True or not isinstance(body['settings'], dict):
+        raise HTTPException(400, 'Explicitly apply the reviewed storage settings')
+    result = call(lambda:storage.enqueue(runtime.service(), ident, expected_settings=body['settings']))
+    runtime.start()
+    return result
 
 
 @router.get('/analysis-profiles')

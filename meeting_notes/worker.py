@@ -6,6 +6,7 @@ import time
 from .store import atomic_write, uid
 from .audio import prepare, slice_wave, cleanup_temporary_audio
 from .chunking import plan_for, parse_part, publish, PreparedAudioMismatch
+from . import storage
 
 LEASE = 60
 
@@ -24,13 +25,21 @@ class Worker:
             db.execute("UPDATE asr_parts SET state='interrupted_unknown' WHERE state='in_flight' AND attempt IN (SELECT attempt FROM jobs WHERE state='interrupted_unknown')")
             active = list(db.execute("SELECT meeting,attempt FROM jobs WHERE state IN ('preparing','in_flight')"))
         cleanup_temporary_audio(self.service.root,{r['attempt'] for r in active},{r['meeting'] for r in active})
+        with self.service.db() as db:
+            roots = [r[0] for r in db.execute('SELECT path FROM storage_locations')]
+        for root in roots:
+            try:
+                storage.check_root(self.service, root)
+                cleanup_temporary_audio(root,{r['attempt'] for r in active},{r['meeting'] for r in active})
+            except (ValueError, OSError):
+                pass
 
     def claim(self):
         self.recover()
         with self.service.db() as db:
             db.execute('BEGIN IMMEDIATE')
             # One worker per profile database. Runtime disallows multiplex/routed profiles.
-            if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight')").fetchone():
+            if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
                 return None
             job = db.execute("SELECT j.*,m.audio FROM jobs j JOIN meetings m ON m.id=j.meeting WHERE j.state='queued' ORDER BY j.rowid LIMIT 1").fetchone()
             if not job:
@@ -44,6 +53,8 @@ class Worker:
         return db.execute("SELECT 1 FROM jobs WHERE id=? AND owner=? AND generation=? AND attempt=? AND lease>=? AND state IN ('preparing','in_flight')",(job['id'],self.owner,job['generation'],job['attempt'],time.time())).fetchone()
 
     def run_once(self):
+        if storage.run_once(self.service):
+            return True
         job = self.claim()
         if not job:
             return False
@@ -58,7 +69,9 @@ class Worker:
         part_path = None
         state, error = 'failed', 'Preparation failed; check ffmpeg, endpoint, model and Hermes ASR secret.'
         try:
-            wav = self.service.root/'audio'/f'{job["meeting"]}.wav'
+            from pathlib import Path
+            storage.check_root(self.service, Path(job['audio']).parent.parent)
+            wav = Path(job['audio']).parent/f'{job["meeting"]}.wav'
             with self.service.db() as db:
                 exists = db.execute('SELECT 1 FROM asr_plans WHERE job=?',(job['id'],)).fetchone()
             if not exists or not wav.exists():
@@ -78,7 +91,7 @@ class Worker:
             adapter = self.adapter_factory(json.loads(plan['settings']))
             adapter.probe()
             if total>1:
-                part_path = self.service.root/'audio'/f'{job["attempt"]}.part.wav'
+                part_path = wav.parent/f'{job["attempt"]}.part.wav'
                 slice_wave(wav,part_path,part['start_frame'],part['frames'])
             request_audio = part_path or wav
             with self.service.db() as db:

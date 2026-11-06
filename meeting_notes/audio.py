@@ -59,9 +59,77 @@ def window(path, start, duration):
     if not 0 <= start or not 0 < duration <= 30:
         raise ValueError('Playback windows must be 0–30 seconds')
     output = io.BytesIO()
-    with wave.open(str(path),'rb') as src:
-        src.setpos(min(int(start*src.getframerate()), src.getnframes()))
-        with wave.open(output,'wb') as dst:
-            dst.setparams(src.getparams())
-            dst.writeframes(src.readframes(int(duration*src.getframerate())))
+    frames = pcm_info(path)
+    data = read_pcm(path, min(int(start*16000), frames), min(int(duration*16000), max(0, frames-int(start*16000))))
+    with wave.open(output, 'wb') as dst:
+        dst.setparams((1,2,16000,0,'NONE','not compressed'))
+        dst.writeframes(data)
     return dict(mime='audio/wav', base64=base64.b64encode(output.getvalue()).decode(), start=start)
+
+
+def pcm_info(path):
+    """Inspect the canonical mono PCM16/16k playback stream (WAV or FLAC)."""
+    path = Path(path)
+    if path.suffix == '.wav':
+        with wave.open(str(path), 'rb') as src:
+            if (src.getnchannels(), src.getsampwidth(), src.getframerate(), src.getcomptype()) != (1, 2, 16000, 'NONE'):
+                raise ValueError('Prepared audio must be mono PCM16 at 16kHz')
+            return src.getnframes()
+    import json
+    data = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries',
+        'stream=codec_name,sample_rate,channels,duration_ts,time_base', '-of', 'json', str(path)],
+        check=True, capture_output=True, timeout=30).stdout)['streams'][0]
+    if data['codec_name'] != 'flac' or int(data['sample_rate']) != 16000 or data['channels'] != 1 or data['time_base'] != '1/16000':
+        raise ValueError('Unsupported prepared archive')
+    return int(data['duration_ts'])
+
+
+def read_pcm(path, start_frame, frames):
+    if frames <= 0:
+        return b''
+    if Path(path).suffix == '.wav':
+        with wave.open(str(path), 'rb') as src:
+            src.setpos(min(start_frame, src.getnframes()))
+            return src.readframes(frames)
+    # Decode only the requested sample range. No lossy seeking or timestamp rounding.
+    return subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path), '-map', '0:a:0',
+        '-af', f'atrim=start_sample={start_frame}:end_sample={start_frame + frames}',
+        '-f', 's16le', '-c:a', 'pcm_s16le', '-'], check=True, capture_output=True, timeout=60).stdout
+
+
+def pcm_digest(path):
+    import hashlib
+    digest = hashlib.sha256()
+    if Path(path).suffix == '.wav':
+        with wave.open(str(path), 'rb') as src:
+            while block := src.readframes(16000 * 10):
+                digest.update(block)
+    else:
+        # A temporary hash output avoids buffering full recordings in memory.
+        result = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path), '-map', '0:a:0',
+            '-c:a', 'pcm_s16le', '-f', 'hash', '-hash', 'sha256', '-'],
+            check=True, capture_output=True, timeout=600).stdout.decode().strip()
+        return result.split('=', 1)[1].lower()
+    return digest.hexdigest()
+
+
+def encode_archive(source, target, codec):
+    """Write a new archive. Callers verify it and atomically publish its pointer."""
+    options = ['-c:a', 'flac', '-compression_level', '5'] if codec == 'flac' else [
+        '-ac', '1', '-c:a', 'libopus', '-b:a', '48k', '-vbr', 'on', '-application', 'voip']
+    with open(target, 'xb') as f:
+        os.chmod(target, 0o600)
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(source), '-map', '0:a:0',
+        '-vn', '-map_metadata', '-1', *options, str(target)], check=True, capture_output=True, timeout=600)
+    with open(target, 'rb') as f:
+        os.fsync(f.fileno())
+
+
+def verify_opus(path, frames):
+    # Fully decode to prove the archive is readable; verify duration, not perceptual quality.
+    result = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path), '-map', '0:a:0',
+        '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'framehash', '-'],
+        check=True, capture_output=True, timeout=600).stdout.decode()
+    count = sum(int(line.split(',')[3]) for line in result.splitlines() if line and not line.startswith('#'))
+    if abs(count - frames) > 320:
+        raise ValueError('Compressed archive duration does not match the recording')

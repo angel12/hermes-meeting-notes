@@ -100,8 +100,8 @@ def test_results_require_evidence_and_safe_links(proposal):
 def test_needs_input_requires_user_continuation_and_unknown_never_resubmits(proposal):
     svc, mid = proposal
     hid, _ = prepare(svc, mid); scoped = actor(svc, mid, hid)
-    actions.callback(scoped, mid, hid, 'begin', 0)
-    actions.callback(scoped, mid, hid, 'report', 1, report('needs_input'))
+    claim = actions.callback(scoped, mid, hid, 'begin', 0)
+    actions.callback(scoped, mid, hid, 'report', 1, report('needs_input'), claim['attempt_token'])
     assert not actions.callback(scoped, mid, hid, 'begin', 2)['may_execute']
     actions.user_update(svc, mid, hid, 2, 'continue', 'Use the confirmed calendar.')
     assert actions.callback(scoped, mid, hid, 'read')['instructions'] == 'Use the confirmed calendar.'
@@ -121,9 +121,9 @@ def test_cancel_only_before_start_and_failed_retry_is_explicit(proposal):
     actions.user_update(svc, mid, hid, 0, 'cancel')
     assert not actions.callback(actor(svc, mid, hid), mid, hid, 'begin', 1)['may_execute']
     hid, _ = prepare(svc, mid, 'request-synthetic-0002'); scoped = actor(svc, mid, hid)
-    actions.callback(scoped, mid, hid, 'begin', 0)
+    claim = actions.callback(scoped, mid, hid, 'begin', 0)
     with pytest.raises(ValueError): actions.user_update(svc, mid, hid, 1, 'cancel')
-    actions.callback(scoped, mid, hid, 'report', 1, report('failed'))
+    actions.callback(scoped, mid, hid, 'report', 1, report('failed'), claim['attempt_token'])
     assert not actions.callback(scoped, mid, hid, 'begin', 2)['may_execute']
     prepare(svc, mid, 'request-synthetic-0003')
     assert len(actions.view(svc, mid)['handoffs']) == 3
@@ -264,3 +264,26 @@ def test_registered_action_tools_complete_a_synthetic_round_trip(homes):
     assert begin['may_execute']
     assert call('meeting_action_callback', handoff_id=hid, operation='report', version=begin['version'], result=report())['status'] == 'completed'
     assert call('meeting_actions')['handoffs'][0]['result']['external_id'] == 'test-item-1'
+
+
+def test_second_chat_cannot_erase_an_in_progress_external_receipt(proposal):
+    svc, mid = proposal
+    hid, _ = prepare(svc, mid); scoped = actor(svc, mid, hid)
+    claim = actions.callback(scoped, mid, hid, 'begin', 0)
+    assert 'attempt_token' not in actions.callback(scoped, mid, hid, 'read')
+    with pytest.raises(ValueError, match='Only the chat'):
+        actions.callback(scoped, mid, hid, 'report', 1, report('failed'))
+    assert actions.callback(scoped, mid, hid, 'report', 1, report())['status'] == 'completed'
+
+
+def test_stale_needs_input_can_be_cancelled_and_replaced(proposal):
+    svc, mid = proposal
+    hid, _ = prepare(svc, mid); scoped = actor(svc, mid, hid)
+    claim = actions.callback(scoped, mid, hid, 'begin', 0)
+    actions.callback(scoped, mid, hid, 'report', 1, report('needs_input'), claim['attempt_token'])
+    svc.correct(mid, 'rename', '1', 'Alex', 0)
+    before = actions.view(svc, mid); page = read_transcript(svc, mid)
+    actions.save(svc, mid, page['basis'], before['actions_id'], [item(page)])
+    actions.user_update(svc, mid, hid, 2, 'cancel')
+    fresh, _ = prepare(svc, mid, 'replacement-handoff-1')
+    assert fresh != hid

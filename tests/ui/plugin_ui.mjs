@@ -463,6 +463,7 @@ test('transcription settings save audio duration independently from HTTP timeout
   const calls=[]
   const rest=async (path,opts={})=>{
     calls.push({path,...opts})
+    if (path === '/storage-settings') return {directory:'',managed_path:'/profile',compress_playback:false,archive_mode:'original'}
     return opts.body || {endpoint:'http://asr.test/v1',model:'nemotron-3.5-transcribe-30b-a4b',timeout:600,max_audio_seconds:3600}
   }
   render(React.createElement(plugin.SettingsForm,{rest}))
@@ -471,8 +472,8 @@ test('transcription settings save audio duration independently from HTTP timeout
   fireEvent.change(duration,{target:{value:'20'}})
   fireEvent.click(screen.getByRole('button',{name:'Save settings'}))
   await screen.findByText(/New transcription plans use them/)
-  assert.equal(calls[1].body.max_audio_seconds,1200)
-  assert.equal(calls[1].body.timeout,600)
+  assert.equal(calls.find(c => c.method === 'PUT').body.max_audio_seconds,1200)
+  assert.equal(calls.find(c => c.method === 'PUT').body.timeout,600)
 })
 
 test('chunk progress and completed boundary review are visible', async () => {
@@ -549,6 +550,51 @@ test('Action Items retains uncertain earlier handoffs and blocks stale proposals
   assert.ok(screen.getByText(/An external change may have happened/))
   assert.equal(screen.queryByRole('button', { name: 'Cancel handoff' }), null)
   assert.equal(writes.length, 0)
+})
+
+
+test('storage settings explain host paths and require opt-in for original replacement', async () => {
+  let settings = { directory: '', managed_path: '/profile/meeting_notes', compress_playback: false, archive_mode: 'original' }
+  const writes = []
+  const rest = async (p, opts = {}) => {
+    assert.equal(p, '/storage-settings')
+    if (opts.method) { writes.push(opts.body); settings = { ...settings, ...opts.body, managed_path: `${opts.body.directory}/managed` } }
+    return settings
+  }
+  render(React.createElement(plugin.StorageSettings, { rest }))
+  const directory = await screen.findByLabelText('Audio directory on Hermes host')
+  assert.match(screen.getByText(/Choose a directory on the Hermes backend/).textContent, /not your browser/)
+  fireEvent.change(directory, { target: { value: '/mounted/recordings' } })
+  fireEvent.change(screen.getByLabelText('Stored recording'), { target: { value: 'opus' } })
+  assert.equal(screen.getByRole('button', { name: 'Save storage settings' }).disabled, true)
+  assert.equal(writes.length, 0)
+  fireEvent.click(screen.getByLabelText('Allow replacement of stored originals after future transcriptions'))
+  fireEvent.click(screen.getByRole('button', { name: 'Save storage settings' }))
+  await waitFor(() => assert.equal(writes.length, 1))
+  assert.deepEqual(writes[0], { directory: '/mounted/recordings', compress_playback: true, archive_mode: 'opus' })
+  assert.ok(await screen.findByText(/Existing recordings change only/))
+})
+
+test('recording storage requires review and sends the exact reviewed policy', async () => {
+  const meeting = await makeBackend().rest('/meetings/m1'), writes = []
+  const policy = { directory: '/disk', managed_path: '/disk/managed', archive_mode: 'opus', compress_playback: true }
+  let status = { combined: false, directory: '/old', archive_mode: 'original', recording_bytes: 100000, playback_bytes: 50000, playback_format: 'wav', job: null }
+  const rest = async (p, opts = {}) => {
+    if (p === '/storage-settings') return policy
+    assert.equal(p, '/meetings/m1/storage')
+    if (opts.method) { writes.push(opts.body); status = { ...status, job: { state: 'queued', result: null } }; return { job_id: 'storage-job' } }
+    return status
+  }
+  render(React.createElement(plugin.RecordingStorage, { meeting, rest }))
+  fireEvent.click(screen.getByText('Audio storage'))
+  fireEvent.click(await screen.findByRole('button', { name: 'Review move / compression' }))
+  await screen.findByText(/Destination: \/disk\/managed/)
+  assert.equal(writes.length, 0)
+  assert.ok(screen.getByText(/Applying this replaces the plugin/))
+  fireEvent.click(screen.getByRole('button', { name: 'Apply reviewed storage settings' }))
+  await waitFor(() => assert.equal(writes.length, 1))
+  assert.deepEqual(writes[0], { apply_current_settings: true, settings: policy })
+  await screen.findByText('Storage: queued')
 })
 
 let failed = 0

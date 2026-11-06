@@ -81,7 +81,19 @@ class Store:
                 transcript TEXT NOT NULL, revision INTEGER NOT NULL, destination TEXT NOT NULL, instructions TEXT NOT NULL,
                 snapshot TEXT NOT NULL, state TEXT NOT NULL, version INTEGER NOT NULL, result TEXT, history TEXT NOT NULL,
                 created REAL NOT NULL, updated REAL, UNIQUE(meeting,request_id));
+            CREATE TABLE IF NOT EXISTS handoff_claims(handoff TEXT PRIMARY KEY REFERENCES action_handoffs(id), token TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS storage_settings(id INTEGER PRIMARY KEY CHECK(id=1), namespace TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS storage_locations(path TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS upload_locations(upload TEXT PRIMARY KEY REFERENCES uploads(id), path TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS audio_assets(meeting TEXT PRIMARY KEY REFERENCES meetings(id),
+                playback TEXT NOT NULL, frames INTEGER NOT NULL, pcm_sha TEXT NOT NULL, archive_mode TEXT NOT NULL, recording_sha TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS storage_jobs(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),
+                settings TEXT NOT NULL, state TEXT NOT NULL, owner TEXT, lease REAL, error TEXT, result TEXT,
+                cleanup TEXT NOT NULL DEFAULT '[]', created REAL NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS one_active_storage_job ON storage_jobs(meeting) WHERE state IN ('queued','running');
+            CREATE TABLE IF NOT EXISTS storage_outputs(job TEXT NOT NULL REFERENCES storage_jobs(id), owner TEXT NOT NULL, path TEXT PRIMARY KEY);
             ''')
+            db.execute('INSERT OR IGNORE INTO storage_settings VALUES(1,?,?)', (uid(), '{}'))
 
     @contextlib.contextmanager
     def db(self):

@@ -49,3 +49,8 @@ The upstream v0.23.0 Capabilities catalog prefetch calls `requestIdleCallback` u
 Rebuild/redeploy from this directory with `docker compose up -d --build webapp`. The build context allowlist excludes all credentials and persisted data. To remove the workaround after an upstream fix, restore the Compose service's image to the pinned `HERMES_TEST_IMAGE`, remove its build block, and recreate it. Persistent data is unchanged.
 
 Validated by reproducing the original Capabilities crash with both native idle APIs removed, then remounting Capabilities with the served fallback: Skills and Plugins navigation rendered without the workspace error. This simulates the missing-API condition; it is not a native Safari test. Refresh the whole page to load the fix (the error boundary's Retry alone does not reload the renderer entry).
+
+
+## Optional separate audio volume
+
+The storage setting is a path inside the container. To use a separate host directory, bind-mount it in Compose (for example `./audio:/opt/audio` beside the existing data volume), make it writable by UID/GID 1000, recreate the test service after checking for active work, then enter `/opt/audio` in Audio storage. The plugin creates its own profile-specific managed child directory. Merely saving that setting does not move existing recordings; use their reviewed storage action. Preserve both the profile data volume and audio volume in backups. Do not point the plugin at a browser-local path or mount a user's unrelated recordings wholesale.
