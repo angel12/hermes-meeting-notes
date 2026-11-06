@@ -1,7 +1,7 @@
 ---
 name: analyze
 description: Generate sourced meeting notes, decisions, questions, and commitments from an imported Meeting Notes transcript in the current Hermes session, then validate and save them to the plugin.
-version: 0.1.3
+version: 0.1.4
 ---
 
 # Meeting notes
@@ -67,3 +67,5 @@ Only report that notes were saved after the tool returns `status: "saved"`. Stop
 
 
 After saving notes, load `meeting_notes:action_items` to extract and save concrete follow-up proposals (including tasks, meetings and training) to Action Items. Reuse already-read source text only after verifying its transcript/revision matches the current action basis. Keep the successful notes even if action extraction needs repair, and report the two outcomes separately. This step creates proposals only; the user must hand off an individual item before any calendar or to-do write.
+
+After a successful save, include a Markdown link labelled **Open sourced notes** using the save result’s `view_url` exactly. Do not invent a host URL or change its meeting/profile parameters. When notes and actions both succeed, include both links in the final recap. These links open the current saved view in the same Hermes Desktop/Webapp host; they do not grant access or perform external actions. If the user opens the link under another profile, follow the plugin’s profile guidance.

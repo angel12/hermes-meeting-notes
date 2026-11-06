@@ -796,6 +796,44 @@ test('meeting deletion lists combined dependencies and never submits when blocke
   assert.equal(screen.queryByRole('form',{name:'Confirm meeting deletion'}),null)
 })
 
+test('meeting links open notes and actions, enforce source profile, and stay read-only', async () => {
+  const b = makeBackend({ withAnalysis: true })
+  const original = b.rest
+  b.rest = async (path, opts) => path === '/meetings/m1/actions' ? { items: [], handoffs: [], basis: {} } : original(path, opts)
+  window.location.hash = '#/meeting-notes?meeting=m1&tab=notes&profile=default'
+  mount(b)
+  await screen.findByRole('tab', { name: /Notes/ })
+  assert.equal(screen.getByRole('tab', { name: /Notes/ }).getAttribute('aria-selected'), 'true')
+  fireEvent(window, new Event('meeting-notes:navigate'))
+  await screen.findByRole('tab', { name: /Notes/ })
+  window.location.hash = '#/meeting-notes?meeting=m1&tab=actions&profile=default'
+  fireEvent(window, new Event('hashchange'))
+  await waitFor(() => assert.equal(screen.getByRole('tab', { name: /Action Items/ }).getAttribute('aria-selected'), 'true'))
+  cleanup()
+  const denied = makeBackend()
+  window.location.hash = '#/meeting-notes?meeting=m1&tab=notes&profile=other'
+  mount(denied)
+  await screen.findByText(/Switch to that profile/)
+  assert.deepEqual([...new Set(denied.calls.map(c => c.path))], ['/analysis-profiles'])
+  assert.equal(mutations(b.calls).length, 0)
+  cleanup(); window.location.hash = ''
+})
+
+test('only valid Meeting Notes links are intercepted and listener is disposed', () => {
+  const navigated = []; let dispose
+  plugin.installMeetingLinks({ onDispose: fn => { dispose = fn } }, { navigate: path => navigated.push(path) })
+  const a = document.createElement('a'); document.body.append(a)
+  for (const href of ['https://example.test/#/meeting-notes?meeting=m1&tab=notes', '#/other', '#/meeting-notes?meeting=../secret&tab=notes', '#/meeting-notes?meeting=m1&tab=notes&tab=actions']) {
+    assert.equal(plugin.parseMeetingLink(href), null)
+  }
+  a.setAttribute('href', '#/meeting-notes?meeting=m1&tab=notes&profile=default')
+  const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+  a.dispatchEvent(click)
+  assert.equal(click.defaultPrevented, true)
+  assert.deepEqual(navigated, ['/meeting-notes?meeting=m1&tab=notes&profile=default'])
+  dispose(); a.remove()
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }

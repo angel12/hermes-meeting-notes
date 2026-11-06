@@ -1345,22 +1345,81 @@ function Welcome({ onNew, hasMeetings }) {
 
 // ── Root ─────────────────────────────────────────────────────────────────────
 
-let lastSelected = null // survives route remounts within one app session
+// Hash links work in both hosts. Only this plugin's exact link namespace is
+// intercepted; no server URL, credentials or native-only protocol is embedded.
+export function parseMeetingLink(href) {
+  if (typeof href !== 'string' || !href.startsWith('#/meeting-notes?')) return null
+  const params = new URLSearchParams(href.slice(href.indexOf('?') + 1))
+  if ([...params.keys()].some(k => !['meeting', 'tab', 'profile'].includes(k)) ||
+      [...params.keys()].some(k => params.getAll(k).length !== 1)) return null
+  const meeting = params.get('meeting'), tab = params.get('tab'), profile = params.get('profile')
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(meeting || '') || !['notes', 'actions'].includes(tab) ||
+      (profile !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(profile))) return null
+  return { meeting, tab, profile }
+}
+
+export function installMeetingLinks(ctx, hostApi = host, doc = globalThis.document) {
+  const click = event => {
+    const href = event.target?.closest?.('a[href]')?.getAttribute('href')
+    if (!parseMeetingLink(href) || !hostApi?.navigate || event.button !== 0 || event.defaultPrevented) return
+    event.preventDefault()
+    event.stopPropagation()
+    hostApi.navigate(href.slice(1))
+    globalThis.window?.dispatchEvent(new Event('meeting-notes:navigate'))
+  }
+  doc?.addEventListener('click', click, true)
+  const dispose = () => doc?.removeEventListener('click', click, true)
+  ctx.onDispose?.(dispose)
+  return dispose
+}
 
 export function Meetings({ ctx }) {
+  const [location, setLocation] = useState(() => ({ href: globalThis.window?.location.hash || '', visit: 0 }))
+  useEffect(() => {
+    const changed = () => setLocation(old => ({ href: globalThis.window?.location.hash || '', visit: old.visit + 1 }))
+    window.addEventListener('hashchange', changed)
+    window.addEventListener('meeting-notes:navigate', changed)
+    return () => {
+      window.removeEventListener('hashchange', changed)
+      window.removeEventListener('meeting-notes:navigate', changed)
+    }
+  }, [])
+  return h(MeetingLinkTarget, { key: location.href + ':' + location.visit, ctx, target: parseMeetingLink(location.href) })
+}
+
+function MeetingLinkTarget({ ctx, target }) {
+  const [scope, setScope] = useState(target?.profile ? 'checking' : 'ready')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (!target?.profile) return
+    let live = true
+    ctx.rest('/analysis-profiles').then(result => {
+      if (!live) return
+      if (result.current === target.profile) setScope('ready')
+      else { setScope('blocked'); setError(`This meeting belongs to profile ${target.profile}. Switch to that profile on the importing connection, then open this link again.`) }
+    }).catch(() => { if (live) { setScope('blocked'); setError('Could not verify the meeting’s importing profile. Open that profile on the importing connection, then try the link again.') } })
+    return () => { live = false }
+  }, [ctx.rest, target?.profile])
+  if (scope !== 'ready') return h('div', { className: 'mn-page', role: 'status' }, error || 'Checking meeting profile…')
+  return h(MeetingWorkspace, { ctx, target })
+}
+
+let lastSelected = null // survives route remounts within one app session
+
+function MeetingWorkspace({ ctx, target }) {
   const rest = ctx.rest
   const [meetings, setMeetings] = useState([])
   const [loaded, setLoaded] = useState(false)
-  const [view, setView] = useState(lastSelected ? 'meeting' : 'home')
+  const [view, setView] = useState(target || lastSelected ? 'meeting' : 'home')
   const [selected, setSelected] = useState(null)
-  const [tab, setTab] = useState('transcript')
+  const [tab, setTab] = useState(target?.tab || 'transcript')
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [notice, setNotice] = useState(null)
   const [actionError, setActionError] = useState('')
   const [pollError, setPollError] = useState('')
   const [playing, setPlaying] = useState(null)
-  const selectedId = useRef(lastSelected)
+  const selectedId = useRef(target?.meeting || lastSelected)
   const mutation = useRef(0)
   const audioUrl = useRef(null)
   const audioRequest = useRef(0)
@@ -1519,6 +1578,7 @@ export default {
   name: 'Meeting Notes',
   defaultEnabled: false,
   register(ctx) {
+    installMeetingLinks(ctx)
     const style = ensureStyles()
     if (style) ctx.onDispose?.(() => style.remove())
     ctx.registerMany([

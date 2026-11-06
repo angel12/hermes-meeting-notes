@@ -1,4 +1,5 @@
 """Session transcript reads and validated notes persistence. No model calls."""
+from .links import meeting_link
 import copy
 from collections import Counter
 from datetime import date, datetime
@@ -141,7 +142,7 @@ def save_notes(svc, meeting_id, basis, items):
             if sid is not None:
                 ref['segment_id'] = aliases[sid]
     record = svc.save_analysis(snapshot, payload, origin='hermes_session')
-    return {'status': 'saved', 'meeting_id': meeting_id, 'analysis_id': record['id'],
+    return {'status': 'saved', 'view_url': meeting_link(svc, meeting_id, 'notes'), 'meeting_id': meeting_id, 'analysis_id': record['id'],
             'revision': record['revision'], 'items_saved': len(record['items']),
             'items_by_kind': dict(Counter(item['kind'] for item in record['items'])),
             'basis': {'transcript_id': record['transcript'], 'revision': record['revision'],

@@ -1,4 +1,5 @@
 """Sourced action proposals and user-created handoffs. No external service calls."""
+from .links import meeting_link
 import copy
 import hashlib
 import json
@@ -119,7 +120,7 @@ def save(svc, meeting, basis, actions_id, items):
                   'profile': getattr(svc, 'analysis_actor', None), 'items': normalized,
                   'sources': {s['id']: s for s in snapshot['segments'] if s['id'] in cited}}
         db.execute('INSERT INTO action_sets VALUES(?,?,?,?,?)', (record['id'], meeting, m['active'], m['revision'], json.dumps(record)))
-    return {'status': 'saved', 'actions_id': record['id'], 'items_saved': len(normalized)}
+    return {'status': 'saved', 'view_url': meeting_link(svc, meeting, 'actions'), 'actions_id': record['id'], 'items_saved': len(normalized)}
 
 
 def _request_id(value):
