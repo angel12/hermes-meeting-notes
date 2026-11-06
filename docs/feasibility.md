@@ -153,3 +153,12 @@ The Action Items review also identified a stale needs-input cancellation dead en
 The Opus review reproduced shared-file deletion after a profile clone copied the storage namespace. Storage identity is now bound to the resolved profile data path; clones/moves (and unbound legacy external locations) rotate the namespace, quarantine old locations and fail old pending jobs. Reconfiguring creates a fresh managed folder without granting access to old paths. Clone regressions verify source file hashes and playback survive both lossless and Opus attempts from the clone.
 
 Playback opens stable file handles under a short lock, then decodes after releasing SQLite. Finalized upload chunk rows are retired after cleanup. Automatic archive jobs recheck policy before starting and publishing, so policy revocation preserves originals. Saving a known storage location verifies its device and does not recreate a missing mount. Backend Opus consent is recorded, and multi-track sources are refused. These fixes are covered by synthetic tests; platform validation remains Linux/macOS rather than a Windows claim.
+
+
+### Reviewed test deployment — 2026-11-06 UTC
+
+Deployed code `4a3b50c` (Action Items, storage and review fixes) to the isolated Compose Webapp after confirming no active chat turn, ASR job or recent upload. Backup: `~/hermes-test/backups/actions-storage-20261106T050500Z`. Local validation: 150 pytest tests, ESM syntax, and Hermes package validation passed. Authenticated host checks passed for backend ping, all eight meetings' action/storage routes, and exact served shared-UI content.
+
+A temporary synthetic datastore inside the running container verified actual host Opus/FLAC codecs, sample-exact playback, cloned-profile isolation, nine registered tools, claim-token enforcement and callback/cancellation. It made zero real ASR or external calendar/task calls. Existing data remained unchanged: eight meetings/transcripts, thirteen corrections, nine analyses, eight transcription attempts, two combinations, twelve audio-file hashes and eleven raw-file hashes. The production test datastore has no storage jobs or handoffs from these checks.
+
+Compose now mounts `~/hermes-test/audio` as `/opt/audio`, writable by the Hermes UID. The storage policy remains unchanged: profile directory, uploaded originals retained, compression disabled. No user recording was moved/archived. Refresh the Webapp to load the new shared UI. Native Desktop visual acceptance and a user-authorized live calendar/to-do round trip remain open.

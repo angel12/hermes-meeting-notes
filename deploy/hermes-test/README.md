@@ -54,3 +54,6 @@ Validated by reproducing the original Capabilities crash with both native idle A
 ## Optional separate audio volume
 
 The storage setting is a path inside the container. Compose includes `./audio:/opt/audio` beside the existing data volume. Make the host audio directory writable by UID/GID 1000, recreate the test service after checking for active work, then enter `/opt/audio` in Audio storage. The plugin creates its own profile-specific managed child directory. Merely saving that setting does not move existing recordings; use their reviewed storage action. Preserve both the profile data volume and audio volume in backups. Do not point the plugin at a browser-local path or mount a user's unrelated recordings wholesale.
+
+
+Reviewed Action Items/storage code `4a3b50c` was deployed with the `/opt/audio` mount on 2026-11-06 UTC. The host authenticated API and synthetic codec/callback checks passed; existing meeting and file hashes were preserved. Storage still defaults to the profile and keeps uploaded originals. Enter `/opt/audio` only when you want new uploads there, then explicitly review/apply settings on any existing recording you choose to migrate.
