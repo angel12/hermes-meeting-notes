@@ -54,7 +54,7 @@ class Worker:
 
     def run_once(self):
         from . import deletion
-        deletion.cleanup(self.service)
+        deletion.cleanup(self.service, automatic=True)
         if storage.run_once(self.service):
             return True
         job = self.claim()
@@ -150,7 +150,7 @@ class Worker:
                     # Preparation can finish after a lost lease and deletion.
                     # This meeting-specific derivative must not be resurrected.
                     try:
-                        deletion._checked(self.service, wav).unlink(missing_ok=True)
+                        deletion.checked_file(self.service, wav).unlink(missing_ok=True)
                     except (OSError, ValueError):
                         pass
                 if self.fenced(db,job):

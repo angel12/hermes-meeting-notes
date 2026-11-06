@@ -646,11 +646,11 @@ export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, dis
   }
   const remove = async e => {
     e.preventDefault()
-    if (!review || title !== review.title || !confirmed || review.blockers.length) return
+    if (!review || title.trim() !== review.title.trim() || !confirmed || review.blockers.length) return
     setBusy(true); onBusy(true); setError('')
     try {
       const result = await rest(`/meetings/${meeting.id}/delete`, { method: 'POST', body: { token: review.token, confirm: true } })
-      onDeleted(result)
+      onDeleted(result, meeting.id)
     } catch (e) { setError(errorText(e)) }
     finally { setBusy(false); onBusy(false) }
   }
@@ -667,7 +667,7 @@ export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, dis
       h(Field, { label: 'Type the meeting title to confirm' }, h('input', { className: 'mn-input', value: title, disabled: busy, onChange: e => setTitle(e.target.value) })),
       h('label', null, h('input', { type: 'checkbox', checked: confirmed, disabled: busy, onChange: e => setConfirmed(e.target.checked) }), ' I understand this permanently deletes local meeting data.'),
       h('div', { className: 'mn-actions' },
-        btn({ type: 'submit', disabled: busy || disabled || !confirmed || title !== review.title || review.blockers.length > 0 }, 'Permanently delete meeting'),
+        btn({ type: 'submit', disabled: busy || disabled || !confirmed || title.trim() !== review.title.trim() || review.blockers.length > 0 }, 'Permanently delete meeting'),
         btn({ variant: 'ghost', disabled: busy, onClick: load }, 'Refresh deletion review'),
         btn({ variant: 'ghost', disabled: busy, onClick: () => { setReview(null); setError('') } }, 'Keep meeting'))),
     error && h(Callout, { tone: 'error', role: 'alert' }, error))
@@ -1452,9 +1452,9 @@ export function Meetings({ ctx }) {
     }
   }
 
-  const deleted = result => {
+  const deleted = (result, deletedId) => {
     mutation.current++; closePlayer(); selectedId.current = null; lastSelected = null; setSelected(null)
-    setView('home'); setActionError(''); setPollError(''); setMeetings(rows => rows.filter(m => m.id !== selected?.id))
+    setView('home'); setActionError(''); setPollError(''); setMeetings(rows => rows.filter(m => m.id !== deletedId))
     setNotice({ tone: result.pending_files ? 'warn' : 'ok', text: result.pending_files ? 'Meeting deleted. Some managed files await cleanup; reconnect storage and use Retry file cleanup in settings.' : 'Meeting and its managed files deleted.' })
   }
 

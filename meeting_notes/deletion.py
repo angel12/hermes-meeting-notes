@@ -11,6 +11,10 @@ def _local(svc):
         raise ValueError('Delete meetings from the importing profile UI')
 
 
+def _working(db):
+    return db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone() is not None
+
+
 def _review(db, meeting):
     row = db.execute('SELECT * FROM meetings WHERE id=?', (meeting,)).fetchone()
     if not row:
@@ -27,13 +31,13 @@ def _review(db, meeting):
     blockers = []
     if dependencies:
         blockers.append('Delete the combined meetings that use this recording first.')
-    if any(j['state'] in ('preparing', 'in_flight') for j in jobs) or any(j['state'] == 'running' for j in storage_jobs):
-        blockers.append('Wait for transcription or audio storage work to finish.')
+    if _working(db):
+        blockers.append('Wait for transcription or audio storage work on this host to finish. After a host restart, use Start queued work to recover expired jobs, then refresh this review.')
     if any(h['state'] in ('running', 'unknown') for h in handoffs):
         blockers.append('Resolve running or uncertain handoffs before deleting their receipts.')
     # Counts and row IDs fence newly saved notes/actions as well as corrections.
     versions = {t: [r[0] for r in db.execute(f'SELECT id FROM {t} WHERE meeting=? ORDER BY id', (meeting,))]
-                for t in ('transcripts', 'analyses', 'action_sets')}
+                for t in ('transcripts', 'analyses', 'action_sets', 'uploads')}
     payload = [dict(row), jobs, storage_jobs, handoffs, versions, dependencies]
     token = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return {'id': meeting, 'title': row['title'], 'token': token, 'counts': counts,
@@ -67,7 +71,7 @@ def _paths(svc, db, meeting):
     return paths
 
 
-def _checked(svc, value):
+def checked_file(svc, value):
     path = Path(value)
     root = path.parent.parent
     if not path.is_absolute() or path.parent.name not in ('audio', 'raw', 'uploads'):
@@ -100,7 +104,7 @@ def remove(svc, meeting, token, confirm):
                 raise ValueError(' '.join(current['blockers']))
             files = []
             for value in sorted(_paths(svc, db, meeting)):
-                path = _checked(svc, value)
+                path = checked_file(svc, value)
                 if path.exists():
                     files.append({'path': str(path), 'sha': storage.digest(path)})
             db.execute('INSERT INTO deletions VALUES(?,?,?,?)', (meeting, token, str(svc.root), json.dumps(files)))
@@ -130,22 +134,27 @@ def status(svc):
     return {'pending_files': sum(len(json.loads(r[0])) for r in rows)}
 
 
-def cleanup(svc):
+def cleanup(svc, *, automatic=False):
     _local(svc)
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
+        if _working(db):
+            return status(svc)
         for row in db.execute("SELECT meeting,files FROM deletions WHERE root=? AND files!='[]'", (str(svc.root),)).fetchall():
             pending = []
             for file in json.loads(row['files']):
+                if automatic and file.get('manual_retry'):
+                    pending.append(file)
+                    continue
                 try:
-                    path = _checked(svc, file['path'])
+                    path = checked_file(svc, file['path'])
                     # A reimport may reuse a content-addressed audio filename.
                     used = db.execute('SELECT 1 FROM meetings WHERE audio=? UNION ALL SELECT 1 FROM audio_assets WHERE playback=? UNION ALL SELECT 1 FROM transcripts WHERE raw=? UNION ALL SELECT 1 FROM attempts WHERE raw=? UNION ALL SELECT 1 FROM storage_outputs WHERE path=?', (str(path),)*5).fetchone()
                     if used:
                         continue
                     if path.exists():
                         if storage.digest(path) != file['sha']:
-                            pending.append(file)
+                            pending.append({**file, 'manual_retry': True})
                             continue
                         path.unlink()
                 except (OSError, ValueError):

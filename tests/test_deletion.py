@@ -178,3 +178,35 @@ def test_late_preparation_cannot_recreate_deleted_playback(tmp_path, monkeypatch
     monkeypatch.setattr(worker,'prepare',late)
     Worker(svc, lambda _: pytest.fail('Deleted meeting submitted to ASR')).run_once()
     assert not svc.list() and not list((svc.root/'audio').iterdir())
+
+
+def test_duplicate_import_invalidates_deletion_review(meeting):
+    svc, mid = meeting
+    token = deletion.review(svc,mid)['token']
+    assert imported(svc)==mid
+    with pytest.raises(ValueError,match='changed'):
+        deletion.remove(svc,mid,token,True)
+    assert svc.get(mid)
+
+
+def test_changed_file_only_rehashed_on_explicit_retry(meeting, monkeypatch):
+    svc,mid=meeting
+    real_cleanup=deletion.cleanup
+    monkeypatch.setattr(deletion,'cleanup',lambda _: None)
+    remove(svc,mid)
+    path=next((svc.root/'audio').iterdir());path.write_bytes(b'changed file')
+    monkeypatch.setattr(deletion,'cleanup',real_cleanup)
+    assert deletion.cleanup(svc)['pending_files']==1
+    original_digest=storage.digest
+    monkeypatch.setattr(storage,'digest',lambda _:pytest.fail('Changed file hashed on an idle tick'))
+    assert deletion.cleanup(svc,automatic=True)['pending_files']==1
+    monkeypatch.setattr(storage,'digest',original_digest)
+    assert deletion.cleanup(svc)['pending_files']==1
+
+
+def test_other_active_job_blocks_hashing_and_cleanup(recordings, monkeypatch):
+    svc,ids=recordings
+    with svc.db() as db:db.execute("UPDATE jobs SET state='in_flight' WHERE meeting=?",(ids[1],))
+    monkeypatch.setattr(storage,'digest',lambda _:pytest.fail('Hashed during active transcription'))
+    with pytest.raises(ValueError,match='finish'):remove(svc,ids[0])
+    assert deletion.cleanup(svc)=={'pending_files':0}
