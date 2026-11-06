@@ -312,7 +312,7 @@ def test_owner_date_schema_and_duplicate_errors_have_safe_locations(meeting):
     with pytest.raises(NotesValidationError) as error:
         save_notes(svc, mid, page['basis'], [item])
     assert {f['code'] for f in error.value.failures} == {
-        'duplicate_source', 'invalid_owner_evidence', 'invalid_date_evidence', 'invalid_calendar_date'}
+        'duplicate_source', 'owner_source_not_cited', 'due_source_not_cited', 'invalid_calendar_date'}
     assert 'Private' not in json.dumps(error.value.as_dict())
     item = wire_item(page)
     item['owner']['name'] = {'private content': 'never echo this'}
@@ -333,4 +333,50 @@ def test_persistence_boundary_reports_short_ids_and_rejects_entire_batch(meeting
     assert error.value.failures[0]['source_id'] == 's0'
     assert snapshot['active'] not in json.dumps(error.value.as_dict())
     assert svc.get(mid)['analysis'] is None
+
+
+@pytest.mark.parametrize('case,code,source', [
+    ('summary_owner', 'owner_requires_commitment', None),
+    ('uncited_owner', 'owner_source_not_cited', 's1'),
+    ('unknown_owner', 'unknown_source', None),
+    ('invented_name', 'owner_name_not_in_quote', 's0'),
+    ('missing_name', 'owner_name_required', None),
+    ('speaker_name', 'speaker_owner_requires_null_name', None),
+    ('unresolved_fields', 'unresolved_owner_requires_null_fields', None),
+    ('summary_due', 'due_requires_commitment', None),
+    ('uncited_due', 'due_source_not_cited', 's1'),
+    ('unknown_due', 'unknown_source', None),
+    ('missing_due_quote', 'due_quote_required', None),
+    ('uncited_date_text', 'due_quote_not_in_citation_quote', 's0'),
+    ('extra_field', 'unexpected_field', None),
+])
+def test_owner_date_failures_identify_the_actual_cause(meeting, case, code, source):
+    svc, mid = meeting
+    sid = svc.get(mid)['segments'][0]['id']
+    svc.correct(mid, 'text', sid, 'I will send it tomorrow.', 0)
+    page = read_transcript(svc, mid)
+    item = wire_item(page)
+    if case == 'summary_owner': item['kind'] = 'summary'
+    elif case == 'uncited_owner': item['owner']['segment_id'] = 's1'
+    elif case == 'unknown_owner': item['owner']['segment_id'] = 'private unknown ID'
+    elif case == 'invented_name': item['owner'].update(basis='named', name='Private invented name')
+    elif case == 'missing_name': item['owner']['basis'] = 'named'
+    elif case == 'speaker_name': item['owner']['name'] = 'Private name'
+    elif case == 'unresolved_fields': item['owner']['basis'] = 'unresolved'
+    elif case == 'extra_field': item['Private field'] = 'Private value'
+    else:
+        item['due'] = {'segment_id': 's0', 'quote': 'tomorrow', 'proposed_date': None}
+        if case == 'summary_due':
+            item['kind'] = 'summary'
+            item['owner'] = {'basis': 'unresolved', 'segment_id': None, 'name': None}
+        elif case == 'uncited_due': item['due']['segment_id'] = 's1'
+        elif case == 'unknown_due': item['due']['segment_id'] = 'private unknown ID'
+        elif case == 'missing_due_quote': item['due']['quote'] = None
+        elif case == 'uncited_date_text': item['citations'][0]['quote'] = 'I will send it'
+    with pytest.raises(NotesValidationError) as error:
+        save_notes(svc, mid, page['basis'], [item])
+    assert len(error.value.failures) == 1
+    failure = error.value.failures[0]
+    assert failure['code'] == code and failure.get('source_id') == source
+    assert 'private' not in json.dumps(error.value.as_dict()).lower()
     assert svc.get(mid)['analysis'] is None

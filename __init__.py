@@ -28,7 +28,7 @@ def register(ctx):
     for name,(properties,required,operation) in tools.items():
         def handler(args,_operation=operation,**kwargs):
             try:
-                return json.dumps(_operation(args))
+                return json.dumps(_operation(args), ensure_ascii=False)
             except NotesValidationError as exc:
                 return json.dumps(exc.as_dict())
             except ValueError as exc:
@@ -36,7 +36,7 @@ def register(ctx):
             except Exception:
                 return json.dumps({'error':'Meeting operation failed; check host configuration'})
         descriptions = {
-            'meeting_transcript': 'Read corrected transcript text for meeting_notes:analyze. Pass source_profile from the meeting request; only its selected analysis profile may read it. Start at offset 0. Page size varies: wait for each page and follow its next_offset until null with the unchanged basis and source_profile; never guess page strides. Use this tool to re-read sources when repairing notes. No model call.',
+            'meeting_transcript': 'Read corrected transcript text for meeting_notes:analyze. Pass source_profile when supplied by the meeting request; only its selected analysis profile may read it. Start at offset 0. Page size varies: wait for each page and follow its next_offset until null with the unchanged basis and source_profile; never guess page strides. Use this tool to re-read sources when repairing notes. No model call.',
             'meeting_save_notes': 'Validate and save the complete notes set produced in this session. Every success becomes the current analysis, not an append; never submit diagnostic subsets or parallel saves. Read the whole transcript first, echo basis/source_profile, and use short source IDs with exact quotes. Rejections write nothing and report zero-based failure paths and known source IDs; repair through meeting_transcript and resubmit the complete set. Checks profile and stale revisions; creates no external tasks.',
             'meeting_retry_transcription': 'Explicitly retry a stopped transcription. Completed chunks are retained. Set use_current_settings=true only when the user requests retry with updated endpoint/timeout/audio limit; unfinished audio is replanned, and the model must stay the same if any chunk completed.',
         }

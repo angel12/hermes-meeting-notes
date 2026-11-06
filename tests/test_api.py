@@ -93,7 +93,13 @@ def test_session_tools_work_without_llm_access(client):
         @property
         def llm(self): pytest.fail('Session workflow attempted a nested model call')
     mod.register(Context())
-    page=json.loads(handlers['meeting_transcript']({'meeting_id':mid}))
+    corrected = 'I’ll send café notes — next\u00a0weekend.'
+    sid = svc.get(mid)['segments'][0]['id']
+    svc.correct(mid, 'text', sid, corrected, 0)
+    wire = handlers['meeting_transcript']({'meeting_id':mid})
+    assert corrected in wire and '\\u2019' not in wire
+    page=json.loads(wire)
+    assert page['segments'][0][2] == corrected
     result=json.loads(handlers['meeting_save_notes']({
         'meeting_id':mid,'basis':page['basis'],'items':[{
             'kind':'commitment','text':'Send it.',

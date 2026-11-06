@@ -66,7 +66,8 @@ def check_schema(payload):
                 path += ('.' if path else '') + part
             else:
                 break
-        raise NotesValidationError([{'path': path or 'items', 'code': 'schema_mismatch'}]) from None
+        code = 'unexpected_field' if exc.validator == 'additionalProperties' else 'schema_mismatch'
+        raise NotesValidationError([{'path': path or 'items', 'code': code}]) from None
 
 
 def basis_for(snapshot):
@@ -177,26 +178,42 @@ def validate(payload, snapshot):
             cited[sid] = quote
         owner, due = item['owner'], item['due']
         if owner['basis'] == 'unresolved':
-            valid_owner = owner['segment_id'] is None and owner['name'] is None
-        elif owner['basis'] == 'speaker':
-            valid_owner = owner['segment_id'] in segments and owner['segment_id'] in cited and owner['name'] is None
+            if owner['segment_id'] is not None or owner['name'] is not None:
+                fail(path + '.owner', 'unresolved_owner_requires_null_fields')
+        elif item['kind'] != 'commitment':
+            fail(path + '.owner', 'owner_requires_commitment')
         else:
-            valid_owner = (owner['segment_id'] in segments and owner['segment_id'] in cited and bool(owner['name']) and
-                           owner['name'].strip() and owner['name'] in cited[owner['segment_id']])
-        if not valid_owner or (item['kind'] != 'commitment' and owner['basis'] != 'unresolved'):
-            fail(path + '.owner', 'invalid_owner_evidence', owner['segment_id'])
+            sid = owner['segment_id']
+            if sid not in segments:
+                fail(path + '.owner.segment_id', 'unknown_source')
+            elif sid not in cited:
+                fail(path + '.owner.segment_id', 'owner_source_not_cited', sid)
+            if owner['basis'] == 'speaker' and owner['name'] is not None:
+                fail(path + '.owner.name', 'speaker_owner_requires_null_name')
+            elif owner['basis'] == 'named':
+                if not owner['name'] or not owner['name'].strip():
+                    fail(path + '.owner.name', 'owner_name_required')
+                elif sid in segments and sid in cited and owner['name'] not in cited[sid]:
+                    fail(path + '.owner.name', 'owner_name_not_in_quote', sid)
         if any(v is not None for v in due.values()):
-            if (item['kind'] != 'commitment' or due['segment_id'] not in segments or due['segment_id'] not in cited or
-                    not due['quote'] or not due['quote'].strip() or
-                    due['quote'] not in cited[due['segment_id']]):
-                fail(path + '.due', 'invalid_date_evidence', due['segment_id'])
+            sid = due['segment_id']
+            if item['kind'] != 'commitment':
+                fail(path + '.due', 'due_requires_commitment')
+            elif sid not in segments:
+                fail(path + '.due.segment_id', 'unknown_source')
+            elif sid not in cited:
+                fail(path + '.due.segment_id', 'due_source_not_cited', sid)
+            elif not due['quote'] or not due['quote'].strip():
+                fail(path + '.due.quote', 'due_quote_required')
+            elif due['quote'] not in cited[sid]:
+                fail(path + '.due.quote', 'due_quote_not_in_citation_quote', sid)
             if due['proposed_date'] is not None:
                 try:
                     parsed = date.fromisoformat(due['proposed_date'])
                     if parsed.isoformat() != due['proposed_date']:
                         raise ValueError()
                 except ValueError:
-                    fail(path + '.due.proposed_date', 'invalid_calendar_date', due['segment_id'])
+                    fail(path + '.due.proposed_date', 'invalid_calendar_date')
         key = fingerprint(item)
         if key in seen:
             fail(path, 'duplicate_item')
