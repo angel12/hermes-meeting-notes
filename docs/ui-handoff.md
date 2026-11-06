@@ -38,3 +38,10 @@ Per-meeting Analysis profile now lists existing Hermes profiles on the importing
 
 
 Deployment update: the polished shared UI, combined-recording form and profile selector are now installed on the Compose test host after Opus 5.5 review and fixes. The host-reconciled `desktop/plugin.js` matches the local artifact exactly. Seventy-four tests and authenticated API/playback checks pass. Reload the Webapp to load it; real host visual acceptance and native Desktop checks are still pending.
+
+
+## Notes session button — 2026-11-06
+
+The Notes tab now always exposes **Start summarization session** once a transcript exists, including when viewing existing notes. It opens the selected analysis profile and prepares the skill request for the user to send. Opus 5.5 review identified an asynchronous composer-mount race and missing clipboard recovery; both were fixed before deployment. Filling waits up to about ten seconds for the selected profile and fresh composer, verifies the text after insertion, retries a late draft reset, and preserves user-entered text. Unavailable profile routes still fail closed, with a copy fallback.
+
+Deployed only `desktop/plugin.js` to the isolated test host, then used the authenticated host reconciliation endpoint. Previous source and served copies are backed up under `~/hermes-test/backups/notes-session-20261106/`. The served artifact matches the local file exactly. All 112 pytest checks pass, including the expanded synthetic UI scenarios. A headless authenticated Webapp check used an existing synthetic recording, clicked Notes → Start summarization session, and confirmed the full request remained in the new composer after settling. It did not submit a model request. Cross-profile activation is covered synthetically; live cross-profile routing and native Desktop remain unverified.
