@@ -1,7 +1,7 @@
 ---
 name: analyze
 description: Generate sourced meeting notes, decisions, questions, and commitments from an imported Meeting Notes transcript in the current Hermes session, then validate and save them to the plugin.
-version: 0.1.1
+version: 0.1.2
 ---
 
 # Meeting notes
@@ -49,6 +49,7 @@ For commitments only:
 - A clear individual first-person commitment can use `owner.basis: "speaker"`, its cited segment ID, and `name: null`. The plugin derives the participant from that segment and updates the owner after speaker corrections.
 - An owner explicitly named in the transcript can use `owner.basis: "named"`, a cited segment ID, and the exact name appearing in that citation's quote. This is text attribution, not a verified participant identity or external assignee.
 - Collective wording such as “we should”, “we need to”, or “we have to” does not assign the speaker as an individual owner.
+- A tentative personal idea such as “I think I should review the draft” is a suggestion, not an accepted commitment. Preserve the hedge and leave its owner unresolved unless there is separate evidence of acceptance.
 - Otherwise leave the owner unresolved. Never guess a name from a speaker label.
 - For a stated date, set `due.segment_id` to a cited source, `due.quote` to the exact date expression within that citation, and `due.proposed_date` to `YYYY-MM-DD` only when unambiguous. Interpret relative dates against the returned `meeting_local_date` and `timezone`, never today's date. If ambiguous, keep the quote and leave `proposed_date` null. Dates remain unconfirmed proposals.
 
