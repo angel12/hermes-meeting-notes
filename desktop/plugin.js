@@ -16,8 +16,9 @@ export const CSS = `
 .mn *{box-sizing:border-box}
 .mn :focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
 .mn h1,.mn h2,.mn h3,.mn h4,.mn p{margin:0}
-.mn-side{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--mn-line)}
-.mn-side-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:16px 12px 8px 16px}
+.mn-side{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--mn-line)}
+.mn-side-head{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:16px 12px 8px 16px}
+.mn-side-head>button{width:100%;min-width:0;white-space:normal;height:auto;min-height:28px}
 .mn-side-head h1{font-size:14px;font-weight:600}
 .mn-list{list-style:none;margin:0;padding:4px 8px;overflow:auto;flex:1;min-height:0}
 .mn-list li{margin:0 0 2px}
