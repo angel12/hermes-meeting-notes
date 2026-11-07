@@ -1,7 +1,9 @@
 """Explicit, durable local reparse. This path never constructs an ASR adapter."""
 import hashlib
 import json
-from .chunking import parse_part, publish
+import wave
+from pathlib import Path
+from .chunking import parse_part, publish, PreparedAudioMismatch
 from .deletion import checked_file
 
 STOPPED = ('failed', 'invalid_response', 'interrupted_unknown')
@@ -32,6 +34,14 @@ def run(worker, job):
     with svc.db() as db:
         plan = dict(db.execute('SELECT * FROM asr_plans WHERE job=?', (job['id'],)).fetchone())
         parts = [dict(p) for p in db.execute("SELECT * FROM asr_parts WHERE job=? AND state!='superseded' ORDER BY start_frame", (job['id'],))]
+    # Recovery may work without audio, but must not bless an existing playback
+    # file whose timeline differs from the saved request plan. Check before
+    # committing parts so correcting the WAV still permits local recovery.
+    wav = Path(job['audio']).parent/f'{job["meeting"]}.wav'
+    if wav.exists() or wav.is_symlink():
+        with wave.open(str(checked_file(svc, wav)), 'rb') as audio:
+            if (audio.getnframes(),audio.getframerate(),audio.getnchannels(),audio.getsampwidth()) != (plan['frames'],plan['rate'],1,2):
+                raise PreparedAudioMismatch('Prepared audio no longer matches saved chunk boundaries. Restore the original prepared WAV before retrying; completed chunks were retained.')
     for part in parts:
         if part['state'] == 'completed':
             continue

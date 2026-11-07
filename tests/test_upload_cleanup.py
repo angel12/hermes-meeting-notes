@@ -104,3 +104,18 @@ def test_interrupted_cleanup_retries_missing_files_safely(tmp_path,monkeypatch):
     monkeypatch.setattr(Path,'unlink',original)
     with svc.db() as db:db.execute('update upload_cleanup_retry set next_check=0')
     assert cleanup(svc)==1
+
+
+def test_staging_file_io_does_not_hold_database_write_lock(tmp_path,monkeypatch):
+    from pathlib import Path
+    svc=Service(tmp_path);uid=staged(svc)
+    original=Path.unlink
+    writes=[]
+    def unlink(path,*args,**kwargs):
+        with svc.db() as db:
+            db.execute('PRAGMA busy_timeout=25')
+            db.execute('UPDATE uploads SET size=size WHERE id=?',(uid,))
+            writes.append(True)
+        return original(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'unlink',unlink)
+    assert cleanup(svc)==1 and writes

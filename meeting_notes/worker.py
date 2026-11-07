@@ -71,6 +71,7 @@ class Worker:
         heartbeat = threading.Thread(target=beat,daemon=True)
         heartbeat.start()
         sent, part_saved = False, False
+        local_only = False
         part_path = None
         wav = None
         state, error = 'failed', 'Preparation failed; check ffmpeg, endpoint, model and Hermes ASR secret.'
@@ -174,6 +175,8 @@ class Worker:
                         pass
                 if self.fenced(db,job):
                     db.execute('UPDATE jobs SET state=?,error=?,lease=NULL WHERE id=?',(state,error,job['id']))
+                    if local_only:
+                        db.execute('DELETE FROM asr_recovery WHERE job=?', (job['id'],))
                     if not part_saved:
                         db.execute('UPDATE asr_parts SET state=? WHERE job=? AND attempt=? AND state!=?',(state,job['id'],job['attempt'],'completed'))
                 db.execute('UPDATE attempts SET outcome=? WHERE id=?',('completed' if part_saved else state,job['attempt']))

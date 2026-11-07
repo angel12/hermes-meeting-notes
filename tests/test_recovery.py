@@ -34,6 +34,7 @@ def test_recover_without_audio_network_or_credentials_and_preserve_raw(tmp_path,
     # Durable intent survives a fresh Service/Worker, without the audio files.
     local_worker(Service(svc.root)).run_once()
     assert svc.get(mid)['job']['state']=='completed'
+    assert not svc.get(mid)['job']['local_recovery']
     assert {p.name:p.read_bytes() for p in (svc.root/'raw').iterdir()}==before
     assert len(adapter.calls)==1
     with svc.db() as db:
@@ -94,6 +95,25 @@ def test_bad_saved_response_never_falls_back_to_transcription(tmp_path,monkeypat
     recovery.request(svc,mid);worker=local_worker(svc);worker.run_once()
     assert svc.get(mid)['job']['state']=='invalid_response'
     assert not svc.get(mid)['active'] and not worker.run_once()
+    assert not svc.get(mid)['job']['local_recovery']
+
+
+def test_existing_mismatched_playback_blocks_recovery_until_restored(tmp_path,monkeypatch):
+    import wave
+    svc,mid,adapter=failed_parse(tmp_path,monkeypatch)
+    wav=svc.root/'audio'/f'{mid}.wav'
+    original=wav.read_bytes()
+    with wave.open(str(wav),'wb') as audio:
+        audio.setparams((1,2,16000,0,'NONE','not compressed'))
+        audio.writeframes(b'\0\0'*100)
+    recovery.request(svc,mid);local_worker(svc).run_once()
+    meeting=svc.get(mid)
+    assert meeting['job']['state']=='failed' and 'chunk boundaries' in meeting['job']['error']
+    assert not meeting['active'] and meeting['can_recover_response']
+    with svc.db() as db:assert not db.execute('select * from storage_jobs').fetchall()
+    wav.write_bytes(original)
+    recovery.request(svc,mid);local_worker(svc).run_once()
+    assert svc.get(mid)['job']['state']=='completed' and len(adapter.calls)==1
 
 
 @pytest.mark.parametrize('status',[401,429,500])

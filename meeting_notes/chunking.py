@@ -129,5 +129,6 @@ def publish(worker, job, plan):
                    (plan['transcript'],job['meeting'],str(raw_path),sha,json.dumps(segments)))
         db.execute('UPDATE meetings SET active=? WHERE id=?',(plan['transcript'],job['meeting']))
         db.execute("UPDATE jobs SET state='completed',error=NULL,lease=NULL WHERE id=?",(job['id'],))
+        db.execute('DELETE FROM asr_recovery WHERE job=?', (job['id'],))
         storage.enqueue(svc, job['meeting'], automatic=True, db=db)
     return True
