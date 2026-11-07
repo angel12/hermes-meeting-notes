@@ -297,7 +297,7 @@ export function describeCorrection(c, segments = [], originalName = label => `Pa
 }
 
 export function notesRequest(meeting) {
-  const scope = meeting.owner_profile ? ` Pass source_profile=${JSON.stringify(meeting.owner_profile)} to every transcript read and notes save. Run this in Hermes profile ${JSON.stringify(meeting.analysis_profile || meeting.owner_profile)}.` : ''
+  const scope = meeting.owner_profile ? ` Pass source_profile=${JSON.stringify(meeting.owner_profile)} to every transcript read and notes save. Run this in Hermes profile ${JSON.stringify(meeting.owner_profile)}.` : ''
   return `Use the meeting_notes:analyze skill to generate and save sourced notes for meeting ${meeting.id}.${scope}`
 }
 
@@ -797,7 +797,7 @@ export function SettingsForm({ rest }) {
     h(StorageSettings, { rest }),
     h(Callout, { tone: 'info', title: 'Host requirements' },
       h('ul', { className: 'mn-steps' },
-        h('li', null, 'Custom uses MEETING_NOTES_ASR_KEY in Hermes secrets. Optional xAI uses the existing Hermes sign-in on the importing host, not the meeting’s analysis profile. Credentials never reach this page.'),
+        h('li', null, 'Custom uses MEETING_NOTES_ASR_KEY in Hermes secrets. Optional xAI uses the existing Hermes sign-in on the importing backend profile. Credentials never reach this page.'),
         h('li', null, 'OpenAI / ChatGPT OAuth diarized file transcription is not yet verified. Existing OAuth models can still generate notes in Hermes chat.'),
         h('li', null, 'ffmpeg and ffprobe must be installed on the Hermes host; optional archives need FLAC and libopus support.'),
         h('li', null, 'Use a single-profile host. Run one host per transcription server for now.'))))
@@ -1031,34 +1031,20 @@ const CSS_ESCAPE = value => (globalThis.CSS && globalThis.CSS.escape ? globalThi
 
 
 export async function analysisChatRoute(hostApi, profile, connectionId) {
-  if (!profile || !hostApi?.profileRoutes || !hostApi?.newChat) throw new Error('Open a Hermes chat in the selected profile and paste the request below.')
+  if (!profile || !hostApi?.profileRoutes || !hostApi?.newChat) throw new Error('Open a Hermes chat in the current profile and paste the request below.')
+  const checkCurrent = () => {
+    if (hostApi.state?.profile?.get && (hostApi.state.profile.get() || 'default') !== profile)
+      throw new Error('The open profile changed. Reopen this meeting in its owning profile before starting a session.')
+    if (hostApi.state?.connectionId?.get && (hostApi.state.connectionId.get() ?? null) !== (connectionId ?? null))
+      throw new Error('The open connection changed. Reopen this meeting before starting a session.')
+  }
+  checkCurrent()
   const routes = await hostApi.profileRoutes()
+  checkCurrent()
   const candidates = routes.filter(r => r.targetProfile === profile &&
     (connectionId ? r.connectionId === connectionId : r.mode === 'local'))
-  if (candidates.length !== 1) throw new Error('The selected profile is not uniquely reachable on this connection. Open it in Hermes first; single-profile Webapp hosts cannot route other profiles.')
+  if (candidates.length !== 1) throw new Error('The meeting’s profile is not uniquely reachable on this connection. Reopen the meeting in its owning profile, or copy the request into that profile’s chat.')
   return candidates[0]
-}
-
-export function AnalysisProfile({ meeting, rest, act, busy }) {
-  const [options, setOptions] = useState(null)
-  const [error, setError] = useState('')
-  useEffect(() => {
-    let live = true
-    rest('/analysis-profiles').then(result => { if (live) { setOptions(result); setError('') } })
-      .catch(e => { if (live) setError(errorText(e)) })
-    return () => { live = false }
-  }, [rest, meeting.id])
-  const selected = meeting.analysis_profile || meeting.owner_profile || options?.current || ''
-  const missing = options && selected && !options.profiles.includes(selected)
-  return h('div', { className: 'mn-card' },
-    h(Field, { label: 'Analysis profile', hint: 'Uses this Hermes profile’s model, instructions and tools in its chat. This meeting’s transcript, notes and action items are shared with it. User-created handoffs use its connected tools.' },
-      h('select', { className: 'mn-input', value: selected, disabled: busy || !options,
-        onChange: e => { const profile = e.target.value; act('Analysis profile saved. Use a chat in that profile to generate notes.', r => r(`/meetings/${meeting.id}/analysis-profile`, { method: 'PUT', body: { profile, revision: meeting.revision } })) } },
-      !options && h('option', { value: selected }, selected || 'Loading profiles…'),
-      missing && h('option', { value: selected }, `${selected} (unavailable)`),
-      ...(options?.profiles || []).map(p => h('option', { key: p, value: p }, p === options.current ? `${p} (importing profile)` : p)))),
-    error && h('p', { className: 'mn-faint', role: 'status' }, `Profiles unavailable: ${error}`),
-    missing && h(Callout, { tone: 'warn', role: 'status' }, 'The saved profile is unavailable. Select an existing profile; analysis will not silently use another one.'))
 }
 
 // newChat returns before React mounts/resets the fresh composer. Only address
@@ -1108,7 +1094,7 @@ export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, tit
     let opened = false
     let copiedRequest = false
     try {
-      const profile = meeting.analysis_profile || meeting.owner_profile
+      const profile = meeting.owner_profile
       if (!hostApi?.newChat) throw new Error('This Hermes version cannot open a session. Copy the request below into a new chat.')
       const route = profile ? await analysisChatRoute(hostApi, profile, connection.current) : undefined
       if (!hostApi.composer?.insertText) copiedRequest = await copyNotesRequest(text)
@@ -1128,7 +1114,7 @@ export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, tit
       hostApi.notify?.({ kind: inserted || copiedRequest ? 'info' : 'error', message })
     } catch (e) {
       if (!copiedRequest) copiedRequest = await copyNotesRequest(text)
-      const message = `${copiedRequest ? 'Request copied. Paste it into a new chat in the selected profile. ' : ''}${errorText(e)}`
+      const message = `${copiedRequest ? 'Request copied. Paste it into a new chat in the meeting’s owning profile. ' : ''}${errorText(e)}`
       setCopied(message)
       if (opened) hostApi.notify?.({ kind: 'error', message })
     } finally {
@@ -1151,7 +1137,7 @@ export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, tit
       h('strong', null, title || (hasNotes ? 'Regenerate notes in Hermes chat' : 'Generate notes in Hermes chat')),
       btn({ size: 'xs', onClick: copy }, 'Copy request'),
       btn({ size: 'sm', variant: 'default', onClick: openProfile, disabled: opening }, opening ? 'Opening…' : requestText ? 'Start Hermes session' : 'Start summarization session')),
-    h('p', { className: 'mn-muted' }, description || `Start a new session, then send the prepared request. The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` Analyze in profile ${meeting.analysis_profile || meeting.owner_profile}; notes remain with the importing profile ${meeting.owner_profile}. The plugin must be enabled in the analysis profile.` : ''}`),
+    h('p', { className: 'mn-muted' }, description || `Start a new session, then send the prepared request. The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` This session uses the open Hermes profile (${meeting.owner_profile}) and its model, instructions and tools.` : ''}`),
     h('input', { ref, className: 'mn-input', readOnly: true, value: text, 'aria-label': inputLabel || 'Notes request to paste into Hermes chat', onFocus: e => e.target.select(), style: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 } }),
     h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' }, copied || hint || 'Review speakers first. The skill reads the current transcript and checks its revision before saving.'))
 }
@@ -1210,7 +1196,7 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
   if (!meeting.active) return h('p', { className: 'mn-muted' }, 'Notes can be generated after the transcript is ready.')
   const counts = analysis ? KINDS.map(k => ({ ...k, n: analysis.items.filter(i => i.kind === k.kind).length })).filter(k => k.n) : []
   return h('div', { className: 'mn-section' },
-    h(RequestBox, { key: `${meeting.id}:${meeting.analysis_profile || meeting.owner_profile || ''}`, meeting, hasNotes: Boolean(latest) }),
+    h(RequestBox, { key: `${meeting.id}:${meeting.owner_profile || ''}`, meeting, hasNotes: Boolean(latest) }),
     versions.length > 0 && h('div', { className: 'mn-toolbar' },
       h(Field, { label: 'Notes version' },
         h('select', { className: 'mn-input', value: analysis?.id || '', disabled: loading, onChange: e => choose(e.target.value) },
@@ -1223,7 +1209,7 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
     analysis && h(Fragment, null,
       historical && h(Callout, { tone: 'info', title: 'Viewing an earlier version' }, h('p', null, 'This is a saved version from history. It is kept unchanged for review.')),
       analysis.needs_review && h(Callout, { tone: 'warn', title: 'Notes may be out of date', role: 'status' },
-        h('p', null, historical ? 'The transcript or analysis profile has changed since this version was generated.' : 'The transcript or analysis profile changed after these notes were generated. Review them or regenerate with the request above. Owners based on who spoke already reflect your speaker corrections; owners named in the text do not change.')),
+        h('p', null, historical ? 'The transcript has changed since this version was generated.' : 'The meeting changed after these notes were generated. Review them or regenerate with the request above. Owners based on who spoke already reflect your speaker corrections; owners named in the text do not change.')),
       analysis.unmatched_previous_items?.length > 0 && h(Callout, { tone: 'info' },
         h('p', null, `${analysis.unmatched_previous_items.length} ${analysis.unmatched_previous_items.length === 1 ? 'item' : 'items'} from the previous version did not carry over exactly. Choose an earlier version above to review them.`)),
       h('p', { className: 'mn-faint' }, `Generated ${relative(analysis.created)} from revision ${analysis.revision}${analysis.transcript !== meeting.active ? ' of an earlier transcript' : ''}${analysis.profile ? ` · profile ${analysis.profile}` : ''}${analysis.model ? ` · ${analysis.model}` : ''}. Quotes are checked word for word against the transcript; the interpretation still needs your review.`),
@@ -1243,7 +1229,7 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
 }
 
 export function actionsRequest(meeting) {
-  return `Use meeting_notes:action_items to find and save sourced tasks, follow-up meetings and training proposals for meeting ${meeting.id}.${meeting.owner_profile ? ` Pass source_profile=${JSON.stringify(meeting.owner_profile)} to every meeting tool call. Run in profile ${JSON.stringify(meeting.analysis_profile || meeting.owner_profile)}.` : ''} Save proposals only; do not create calendar events or external tasks.`
+  return `Use meeting_notes:action_items to find and save sourced tasks, follow-up meetings and training proposals for meeting ${meeting.id}.${meeting.owner_profile ? ` Pass source_profile=${JSON.stringify(meeting.owner_profile)} to every meeting tool call. Run in profile ${JSON.stringify(meeting.owner_profile)}.` : ''} Save proposals only; do not create calendar events or external tasks.`
 }
 
 export function handoffRequest(meeting, handoff) {
@@ -1293,12 +1279,13 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
       handoff.result.provider && h('p', { className: 'mn-faint' }, `${handoff.result.provider}${handoff.result.external_id ? ` · ${handoff.result.external_id}` : ''}`),
       handoff.result.url && h('a', { href: handoff.result.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open external result')),
     handoff.state === 'unknown' && h(Callout, { tone: 'warn' }, 'An external change may have happened. Ask Hermes to look it up before any retry.'),
-    ['pending', 'running', 'unknown'].includes(handoff.state) && h(RequestBox, {
-      meeting: { ...meeting, analysis_profile: handoff.profile }, hostApi,
+    handoff.profile !== meeting.owner_profile && h(Callout, { tone: 'warn' }, `This older handoff belongs to profile ${handoff.profile}. Unstarted handoffs can be cancelled and prepared again here. For an already-started handoff, use its original chat to reconcile and report the outcome; do not create a duplicate.`),
+    ['pending', 'running', 'unknown'].includes(handoff.state) && handoff.profile === meeting.owner_profile && h(RequestBox, {
+      meeting, hostApi,
       requestText: handoffRequest(meeting, handoff), title: handoff.state === 'pending' ? 'Send this handoff to Hermes' : 'Review this handoff with Hermes',
       inputLabel: 'Handoff request to paste into Hermes chat',
       hint: 'Hermes reads this saved handoff and records its outcome here. Copying alone does not execute it.',
-      description: handoff.state === 'pending' ? 'Paste this request into the selected profile chat. Hermes uses its available calendar or to-do tools, asks for missing details, and reports the actual outcome here.' : 'The same handoff ID preserves its history. Hermes must check the existing outcome instead of starting another external write.' }),
+      description: handoff.state === 'pending' ? 'Paste this request into the current profile chat. Hermes uses its available calendar or to-do tools, asks for missing details, and reports the actual outcome here.' : 'The same handoff ID preserves its history. Hermes must check the existing outcome instead of starting another external write.' }),
     ['pending', 'needs_input'].includes(handoff.state) && btn({ variant: 'ghost', disabled: busy, onClick: () => update(handoff, 'cancel') }, 'Cancel handoff'),
     handoff.state === 'needs_input' && h('form', { onSubmit: e => { e.preventDefault(); update(handoff, 'continue') } },
       h(Field, { label: 'Additional handoff details', hint: 'Confirm the calendar/list, timing, attendees or other details Hermes requested. Configure service access privately in Hermes.' },
@@ -1330,7 +1317,7 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
             h('option', { value: 'todo' }, 'My to-do list'), h('option', { value: 'calendar' }, 'My calendar'))),
           h(Field, { label: 'Instructions for Hermes', hint: 'Specify your list/calendar and confirmed details, or let Hermes ask in chat. Do not enter passwords or keys.' },
             h('textarea', { className: 'mn-input', maxLength: 4000, value: form.instructions, onChange: e => setForm({ ...form, instructions: e.target.value }) })),
-          h('p', { className: 'mn-faint' }, `This prepares a request for profile ${meeting.analysis_profile || meeting.owner_profile || '(select a profile first)'}. No calendar event or task is created until you send it in Hermes chat.`),
+          h('p', { className: 'mn-faint' }, `This prepares a request for profile ${meeting.owner_profile || 'current profile'}. No calendar event or task is created until you send it in Hermes chat.`),
           btn({ type: 'submit', disabled: busy || data.needs_review }, 'Prepare handoff'),
           btn({ variant: 'ghost', disabled: busy, onClick: () => setForm(null) }, 'Cancel')),
         ...handoffs.map(handoffCard))
@@ -1367,7 +1354,6 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
         ready && analysis && h('span', null, `${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${analysis.needs_review ? ' · needs review' : ''}`))),
     notice && h(Callout, { tone: notice.tone || 'ok', role: 'status' }, h('p', null, notice.text)),
     h(DeleteMeeting, { meeting, rest, disabled: busy, onBusy: onDeleteBusy, onDeleted }),
-    h(AnalysisProfile, { meeting, rest, act, busy }),
     meeting.transcription_chunks?.some(c => c.recognized_segments === 0) && meeting.segments.length > 0 &&
       h(Callout, { tone: 'warn', title: 'Some audio has no recognized words', role: 'status' }, 'At least one chunk returned no words. Review its audio before relying on these notes; this does not prove silence.'),
     meeting.transcription_chunks?.length > 1 && h('details', { className: 'mn-card' },

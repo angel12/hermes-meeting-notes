@@ -36,147 +36,112 @@ def homes(tmp_path, monkeypatch):
     return svc,mid,dirs,current,bound,multiplex
 
 
-def test_profile_selection_persists_and_default_is_importing_profile(homes):
-    svc,mid,dirs,current,*_=homes
-    assert profiles.options()=={'current':'default','profiles':['default','other','research']}
-    assert svc.get(mid)['analysis_profile']=='default'
-    first=profiles.select(svc,mid,'research',0)
-    assert first['analysis_profile']=='research' and first['revision']==1
-    reopened=Service(svc.root); reopened.owner_profile='default'
-    assert reopened.get(mid)['analysis_profile']=='research'
-    assert profiles.select(svc,mid,'research',1)['revision']==1
-    with pytest.raises(ValueError,match='refresh'): profiles.select(svc,mid,'other',0)
-    with pytest.raises(ValueError,match='existing'): profiles.select(svc,mid,'../other',1)
+def legacy_selection(svc, mid):
+    with svc.db() as db:
+        db.execute('INSERT OR REPLACE INTO meeting_profiles VALUES(?,?)', (mid, 'research'))
 
 
-def test_selected_profile_reads_and_saves_to_importing_profile(homes):
-    svc,mid,dirs,current,*_=homes
-    original={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in (svc.root/'raw').iterdir()}
-    profiles.select(svc,mid,'research',0)
+def test_legacy_selection_is_ignored_and_owner_can_read_save(homes):
+    svc, mid, dirs, current, *_ = homes
+    legacy_selection(svc, mid)
+    original = {p:hashlib.sha256(p.read_bytes()).hexdigest() for p in (svc.root/'raw').iterdir()}
+    assert profiles.options() == {'current':'default', 'profiles':['default']}
+    scoped = profiles.analysis_service(mid, 'default')
+    page = read_transcript(scoped, mid)
+    assert page['source_profile'] == page['analysis_profile'] == 'default'
+    result = save(scoped, mid, payload(scoped.get(mid)))
+    assert result['profile'] == 'default'
+    assert svc.get(mid)['analysis']['id'] == result['id']
+    assert svc.get(mid)['revision'] == 0
+    with svc.db() as db:
+        assert db.execute('SELECT profile FROM meeting_profiles WHERE meeting=?',(mid,)).fetchone()[0] == 'research'
+    for path, digest in original.items(): assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+
+
+def test_other_profiles_cannot_use_old_grant_or_open_foreign_store(homes, monkeypatch):
+    svc, mid, dirs, current, *_ = homes
+    legacy_selection(svc, mid)
     current.set(dirs['research'])
-    scoped=profiles.analysis_service(mid,'default')
-    page=read_transcript(scoped,mid)
-    assert page['source_profile']=='default' and page['analysis_profile']=='research'
-    result=save(scoped,mid,payload(scoped.get(mid)))
-    assert result['profile']=='research'
-    assert svc.get(mid)['analysis']['id']==result['id']
-    assert not (dirs['research']/'plugin-data').exists(), 'transcript must not be copied into target profile'
-    for path,digest in original.items(): assert hashlib.sha256(path.read_bytes()).hexdigest()==digest
+    monkeypatch.setattr(profiles.sqlite3, 'connect', lambda *a, **k: pytest.fail('Foreign database must not be opened'))
+    with pytest.raises(ValueError, match='cross-profile'): profiles.analysis_service(mid, 'default')
+    with pytest.raises(ValueError, match='cross-profile'): profiles.analysis_service(mid, '../../default')
+    assert not (dirs['research']/'plugin-data').exists()
 
 
-def test_unselected_profiles_cannot_read_and_selection_revokes_access(homes):
-    svc,mid,dirs,current,*_=homes
-    profiles.select(svc,mid,'research',0)
-    for actor in ('default','other'):
-        current.set(dirs[actor])
-        with pytest.raises(ValueError,match='not assigned'): profiles.analysis_service(mid,'default')
-    current.set(dirs['research'])
-    scoped=profiles.analysis_service(mid,'default')
-    snapshot=scoped.get(mid)
-    current.set(dirs['default']); profiles.select(svc,mid,'other',1)
-    with pytest.raises(ValueError,match='not assigned'): scoped.get(mid)
-    with pytest.raises(ValueError,match='not assigned'): scoped.save_analysis(snapshot,payload(snapshot))
-    current.set(dirs['research'])
-    with pytest.raises(ValueError,match='unavailable'): profiles.analysis_service(mid,'../../default')
+def test_stale_cross_profile_service_cannot_read_or_save(homes):
+    svc, mid, *_ = homes
+    snapshot = svc.get(mid)
+    svc.analysis_actor = 'research'; svc.analysis_meeting = mid
+    with pytest.raises(ValueError, match='another Hermes profile'): svc.get(mid)
+    with pytest.raises(ValueError, match='another Hermes profile'): svc.save_analysis(snapshot, payload(snapshot))
 
 
-def test_change_away_and_back_still_invalidates_inflight_notes(homes):
-    svc,mid,dirs,current,*_=homes
-    profiles.select(svc,mid,'research',0)
-    current.set(dirs['research']); scoped=profiles.analysis_service(mid,'default'); snapshot=scoped.get(mid)
-    current.set(dirs['default'])
-    profiles.select(svc,mid,'other',1); profiles.select(svc,mid,'research',2)
-    with pytest.raises(ValueError,match='changed during analysis'): scoped.save_analysis(snapshot,payload(snapshot))
+def test_corrected_revision_still_invalidates_inflight_notes(homes):
+    svc, mid, *_ = homes
+    scoped = profiles.analysis_service(mid)
+    snapshot = scoped.get(mid)
+    svc.correct(mid, 'rename', '1', 'Alex', 0)
+    with pytest.raises(ValueError, match='changed during analysis'): scoped.save_analysis(snapshot, payload(snapshot))
     assert svc.get(mid)['analysis'] is None
 
 
-def test_profile_change_marks_existing_notes_for_review_without_relabeling_history(homes):
-    svc,mid,dirs,current,*_=homes
-    scoped=profiles.analysis_service(mid)
-    saved=save(scoped,mid,payload(scoped.get(mid)))
-    profiles.select(svc,mid,'research',0)
-    assert svc.get(mid)['analysis']['needs_review']
-    assert svc.get_analysis(mid,saved['id'])['profile']=='default'
-
-
 def test_multiplex_identity_must_be_bound_and_match(homes):
-    svc,mid,dirs,current,bound,multiplex=homes
-    profiles.select(svc,mid,'research',0)
-    current.set(dirs['research']); multiplex.set(True)
-    with pytest.raises(ValueError,match='bind a profile'): profiles.analysis_service(mid,'default')
+    svc, mid, dirs, current, bound, multiplex = homes
+    multiplex.set(True)
+    with pytest.raises(ValueError, match='bind a profile'): profiles.analysis_service(mid)
     bound.set(str(dirs['other']))
-    with pytest.raises(ValueError,match='do not match'): profiles.analysis_service(mid,'default')
-    bound.set(str(dirs['research']))
-    assert profiles.analysis_service(mid,'default').get(mid)['analysis_profile']=='research'
+    with pytest.raises(ValueError, match='do not match'): profiles.analysis_service(mid)
+    bound.set(str(dirs['default']))
+    assert profiles.analysis_service(mid).get(mid)['analysis_profile'] == 'default'
     from meeting_notes import runtime
-    module=ModuleType('plugins.plugin_storage'); module.plugin_data_dir=lambda _:dirs['research']/'plugin-data/meeting_notes'
-    # Install only for the isolated check below; worker boundary stays closed.
-    previous=sys.modules.get('plugins.plugin_storage'); sys.modules['plugins.plugin_storage']=module
-    try:
-        with pytest.raises(ValueError,match='single-profile'): runtime.start()
-    finally:
-        if previous is None: sys.modules.pop('plugins.plugin_storage',None)
-        else: sys.modules['plugins.plugin_storage']=previous
+    with pytest.raises(ValueError, match='single-profile'): runtime.start()
 
 
-def test_scoped_service_cannot_read_another_meeting_or_silently_default(homes):
-    svc,mid,dirs,current,*_=homes
-    profiles.select(svc,mid,'research',0)
-    current.set(dirs['research']); scoped=profiles.analysis_service(mid,'default')
-    # Different meeting even with the same target is outside this tool invocation.
+def test_scoped_service_cannot_read_another_meeting(homes):
+    svc, mid, *_ = homes
+    scoped = profiles.analysis_service(mid)
     with svc.db() as db:
-        row=db.execute('SELECT * FROM meetings WHERE id=?',(mid,)).fetchone()
+        row = db.execute('SELECT * FROM meetings WHERE id=?',(mid,)).fetchone()
         db.execute('INSERT INTO meetings(id,title,date,timezone,audio,sha) VALUES(?,?,?,?,?,?)',('another','Another',row['date'],row['timezone'],row['audio'],'another'))
-        db.execute("INSERT INTO meeting_profiles VALUES('another','research')")
-    with pytest.raises(ValueError,match='not assigned'): scoped.get('another')
-    with pytest.raises(ValueError,match='no Meeting Notes data'): profiles.analysis_service(mid)
-    del dirs['research']
-    with pytest.raises(ValueError,match='unambiguously'): profiles.analysis_service(mid,'default')
+    with pytest.raises(ValueError, match='another Hermes profile'): scoped.get('another')
 
 
-def test_selector_api_and_read_only_discovery(homes,monkeypatch):
+def test_selector_api_refuses_old_clients_and_discovery_only_names_current(homes, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    svc,mid,*_=homes
-    spec=importlib.util.spec_from_file_location('profile_api',Path(__file__).parents[1]/'dashboard/plugin_api.py')
-    api=importlib.util.module_from_spec(spec); spec.loader.exec_module(api)
+    svc, mid, *_ = homes
+    spec = importlib.util.spec_from_file_location('profile_api',Path(__file__).parents[1]/'dashboard/plugin_api.py')
+    api = importlib.util.module_from_spec(spec); spec.loader.exec_module(api)
     monkeypatch.setattr(api.runtime,'service',lambda:svc)
-    monkeypatch.setattr(api.runtime,'start',lambda:pytest.fail('Profile selection starts no work'))
-    app=FastAPI(); app.include_router(api.router); client=TestClient(app)
-    assert client.get('/analysis-profiles').json()['current']=='default'
-    assert svc.get(mid)['revision']==0
-    response=client.put(f'/meetings/{mid}/analysis-profile',json={'profile':'research','revision':0})
-    assert response.status_code==200 and response.json()['analysis_profile']=='research'
-    assert client.put(f'/meetings/{mid}/analysis-profile',json={'profile':'other','revision':0}).status_code==400
+    monkeypatch.setattr(api.runtime,'start',lambda:pytest.fail('Identity lookup starts no work'))
+    app = FastAPI(); app.include_router(api.router); client = TestClient(app)
+    assert client.get('/analysis-profiles').json() == {'current':'default','profiles':['default']}
+    assert client.put(f'/meetings/{mid}/analysis-profile',json={'profile':'research','revision':0}).status_code == 410
+    assert svc.get(mid)['revision'] == 0
 
 
 def test_concurrent_profile_contexts_never_share_the_first_actor(homes):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
-    svc,mid,dirs,current,bound,multiplex=homes
-    profiles.select(svc,mid,'research',0)
-    barrier=Barrier(2)
+    svc, mid, dirs, current, bound, multiplex = homes
+    legacy_selection(svc, mid)
+    barrier = Barrier(2)
     def read(actor):
         current.set(dirs[actor]); bound.set(str(dirs[actor])); multiplex.set(True)
         barrier.wait()
-        try:
-            return profiles.analysis_service(mid,'default').get(mid)['analysis_profile']
-        except ValueError as exc:
-            return str(exc)
+        try: return profiles.analysis_service(mid,'default').get(mid)['analysis_profile']
+        except ValueError: return 'denied'
     with ThreadPoolExecutor(2) as pool:
-        results=list(pool.map(read,['research','other']))
-    assert results==['research','This meeting is not assigned to the current Hermes profile']
+        assert list(pool.map(read, ['default','research'])) == ['default','denied']
 
 
-def test_local_import_survives_unknown_catalog_identity_but_sharing_stays_closed(homes,monkeypatch):
+def test_local_import_survives_unknown_identity_but_analysis_stays_closed(homes, monkeypatch):
     from meeting_notes import runtime
-    svc,mid,dirs,current,bound,multiplex=homes
+    svc, mid, dirs, current, *_ = homes
     current.set(dirs['default']/'uncataloged-home')
-    module=ModuleType('plugins.plugin_storage'); module.plugin_data_dir=lambda _:svc.root
+    module = ModuleType('plugins.plugin_storage'); module.plugin_data_dir = lambda _:svc.root
     monkeypatch.setitem(sys.modules,'plugins.plugin_storage',module)
-    local=runtime.service()
+    local = runtime.service()
     assert local.owner_profile is None
-    assert local.get(mid)['id']==mid
-    assert imported(local)==mid
-    with pytest.raises(ValueError,match='unambiguously'): profiles.select(local,mid,'research',0)
-    with pytest.raises(ValueError,match='unambiguously'): profiles.analysis_service(mid,'default')
+    assert local.get(mid)['id'] == mid
+    with pytest.raises(ValueError, match='unambiguously'): profiles.analysis_service(mid,'default')

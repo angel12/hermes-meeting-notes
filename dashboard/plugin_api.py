@@ -75,10 +75,8 @@ def analysis_profiles():
 
 @router.put('/meetings/{ident}/analysis-profile')
 def analysis_profile(ident: str, body: dict):
-    from meeting_notes.profiles import select
-    if set(body) != {'profile','revision'}:
-        raise HTTPException(400,'Expected profile and revision')
-    return call(lambda:select(runtime.service(),ident,body['profile'],body['revision']))
+    # An older UI must not keep creating grants that the current UI cannot show.
+    raise HTTPException(410, 'Analysis profile selection was removed. Use the profile currently open in Hermes.')
 
 
 @router.put('/settings')

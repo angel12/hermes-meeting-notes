@@ -143,31 +143,51 @@ def test_corrections_block_new_execution_but_preserve_late_receipt(proposal):
     assert view['handoffs'][0]['result']['external_id'] == 'test-item-1'
 
 
-def test_profile_change_revokes_begin_but_frozen_actor_can_report(homes):
+def test_legacy_cross_profile_handoff_can_report_but_cannot_read_transcript(homes):
     svc, mid, dirs, current, *_ = homes
     page = read_transcript(svc, mid)
     actions.save(svc, mid, page['basis'], None, [item(page)])
     hid, _ = prepare(svc, mid)
+    actions.callback(profiles.handoff_service(mid, hid), mid, hid, 'begin', 0)
+    # A persisted handoff that began in another profile before this upgrade.
+    with svc.db() as db:
+        db.execute("UPDATE action_handoffs SET profile='research' WHERE id=?", (hid,))
+        db.execute('INSERT INTO meeting_profiles VALUES(?,?)', (mid,'research'))
+    current.set(dirs['research'])
     scoped = profiles.handoff_service(mid, hid, 'default')
-    actions.callback(scoped, mid, hid, 'begin', 0)
-    profiles.select(svc, mid, 'research', 0)
     assert actions.callback(scoped, mid, hid, 'read')['needs_review']
     assert actions.callback(scoped, mid, hid, 'report', 1, report())['needs_review']
     with pytest.raises(ValueError): scoped.get(mid)
-    current.set(dirs['research'])
-    with pytest.raises(ValueError, match='not assigned'): profiles.handoff_service(mid, hid, 'default')
+    with pytest.raises(ValueError, match='cross-profile'): profiles.analysis_service(mid, 'default')
     assert not (dirs['research']/'plugin-data').exists()
 
 
-def test_pending_handoff_cannot_execute_after_profile_switch(homes):
+def test_legacy_pending_handoff_cannot_execute_and_can_be_cancelled(homes):
     svc, mid, dirs, current, *_ = homes
     page = read_transcript(svc, mid)
     actions.save(svc, mid, page['basis'], None, [item(page)])
     hid, _ = prepare(svc, mid)
+    with svc.db() as db: db.execute("UPDATE action_handoffs SET profile='research' WHERE id=?", (hid,))
+    assert actions.view(svc, mid)['handoffs'][0]['needs_review']
+    current.set(dirs['research'])
     scoped = profiles.handoff_service(mid, hid, 'default')
-    profiles.select(svc, mid, 'research', 0)
     with pytest.raises(ValueError, match='changed'): actions.callback(scoped, mid, hid, 'begin', 0)
     with pytest.raises(ValueError): actions.callback(scoped, mid, hid, 'report', 0, report())
+    current.set(dirs['default'])
+    actions.user_update(svc, mid, hid, 0, 'cancel')
+    new, _ = prepare(svc, mid, 'request-synthetic-new')
+    assert new != hid
+    assert next(h for h in actions.view(svc, mid)['handoffs'] if h['id'] == new)['profile'] == 'default'
+
+
+def test_legacy_needs_input_handoff_can_cancel_but_not_continue(proposal):
+    svc, mid = proposal
+    hid, _ = prepare(svc, mid)
+    with svc.db() as db:
+        db.execute("UPDATE action_handoffs SET profile='research',state='needs_input' WHERE id=?", (hid,))
+    with pytest.raises(ValueError, match='legacy handoff'):
+        actions.user_update(svc, mid, hid, 0, 'continue', 'Reviewed instructions')
+    assert actions.user_update(svc, mid, hid, 0, 'cancel')['status'] == 'cancelled'
 
 
 def test_reanalysis_keeps_exact_lineage_and_orphans_ambiguous_receipts(proposal):

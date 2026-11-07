@@ -385,25 +385,14 @@ test('playback ignores superseded requests and requests resolved after navigatio
   assert.equal(screen.queryByRole('region', { name: 'Audio playback' }), null)
 })
 
-test('analysis profile selector persists revision and does not run a model', async () => {
-  const calls = []
-  const rest = async (path, opts = {}) => {
-    calls.push({ path, ...opts })
-    if (path === '/analysis-profiles') return { current: 'default', profiles: ['default', 'research'] }
-    return { id: 'm1', owner_profile: 'default', analysis_profile: 'research', revision: 5 }
-  }
-  const meeting = { id: 'm1', owner_profile: 'default', analysis_profile: 'default', revision: 4 }
-  const act = async (_, fn) => fn(rest)
-  const view = render(React.createElement(plugin.AnalysisProfile, { meeting, rest, act, busy: false }))
-  await screen.findByRole('option', { name: 'research' })
-  assert.equal(calls.length, 1)
-  fireEvent.change(screen.getByLabelText('Analysis profile'), { target: { value: 'research' } })
-  await waitFor(() => assert.equal(calls.length, 2))
-  assert.deepEqual(calls[1], { path: '/meetings/m1/analysis-profile', method: 'PUT', body: { profile: 'research', revision: 4 } })
-  assert.match(plugin.notesRequest({ ...meeting, analysis_profile: 'research' }), /source_profile="default".*profile "research"/)
-  view.rerender(React.createElement(plugin.AnalysisProfile, { meeting: { ...meeting, analysis_profile: 'deleted' }, rest, act, busy: false }))
-  assert.equal(screen.getByLabelText('Analysis profile').value, 'deleted')
-  assert.ok(screen.getByText(/saved profile is unavailable/))
+test('meeting has no analysis selector and ignores legacy profile choices in requests', async () => {
+  const b=makeBackend()
+  await openMeeting(b)
+  assert.equal(screen.queryByLabelText('Analysis profile'),null)
+  assert.equal(b.calls.some(c=>c.path.includes('/analysis-profile') && c.method),false)
+  const meeting={id:'m1',owner_profile:'default',analysis_profile:'research'}
+  assert.match(plugin.notesRequest(meeting),/source_profile="default".*profile "default"/)
+  assert.match(plugin.actionsRequest(meeting),/source_profile="default".*profile "default"/)
 })
 
 test('profile chat routing stays on the importing connection and fails closed', async () => {
@@ -417,6 +406,19 @@ test('profile chat routing stays on the importing connection and fails closed', 
   await assert.rejects(plugin.analysisChatRoute(hostApi, 'research', null), /not uniquely reachable/)
   routes.push({ ...routes[0], profile: 'duplicate' })
   await assert.rejects(plugin.analysisChatRoute(hostApi, 'research', 'host-a'), /not uniquely reachable/)
+})
+
+test('session routing refuses profile or connection changes during discovery', async () => {
+  for (const change of ['profile','connection']) {
+    let profile='default', connection='host-a', resolve
+    const api={state:{profile:{get:()=>profile},connectionId:{get:()=>connection}},
+      profileRoutes:()=>new Promise(done=>{resolve=done}),newChat:()=>assert.fail('Must not open a session')}
+    const pending=plugin.analysisChatRoute(api,'default','host-a')
+    if(change==='profile') profile='research'
+    else connection='host-b'
+    resolve([{connectionId:'host-a',targetProfile:'default',mode:'remote'}])
+    await assert.rejects(pending,/open (profile|connection) changed/)
+  }
 })
 
 test('combine form orders snapshots and preserves request ID after an uncertain response', async () => {
@@ -477,7 +479,7 @@ test('starting a session fails closed when profile routing is unavailable', asyn
     render(React.createElement(plugin.RequestBox,{meeting:{id:'m1',owner_profile:'default',analysis_profile:'research'},hasNotes:false,
       hostApi:{profileRoutes:async()=>[],newChat:()=>assert.fail('Unavailable route must not open a chat')}}))
     fireEvent.click(screen.getByRole('button',{name:'Start summarization session'}))
-    await screen.findByText(/The selected profile is not uniquely reachable/)
+    await screen.findByText(/profile is not uniquely reachable/)
     assert.equal(copied.length,1)
   } finally {
     if(original) Object.defineProperty(globalThis,'navigator',original)
@@ -485,12 +487,12 @@ test('starting a session fails closed when profile routing is unavailable', asyn
   }
 })
 
-test('new summarization session fills the selected profile', async () => {
+test('new summarization session stays in the current profile despite a legacy selection', async () => {
   const calls=[]
-  const route={connectionId:'host-a',targetProfile:'research',mode:'remote'}
+  const route={connectionId:'host-a',targetProfile:'default',mode:'remote'}
   let finishRoute
   const hostApi={
-    state:{connectionId:{get:()=> 'host-a'}},
+    state:{connectionId:{get:()=> 'host-a'},profile:{get:()=> 'default'}},
     profileRoutes:()=>new Promise(resolve=>{finishRoute=()=>resolve([route])}),
     newChat:target=>calls.push(['open',target]),
     composer:{insertText:async (...args)=>{calls.push(['insert',...args]);return true}},
@@ -504,7 +506,7 @@ test('new summarization session fills the selected profile', async () => {
   assert.deepEqual(calls[0],['open',route])
   assert.equal(calls[1][0],'insert')
   assert.equal(calls[1][1],'new')
-  assert.match(calls[1][2],/meeting m1.*source_profile="default".*profile "research"/)
+  assert.match(calls[1][2],/meeting m1.*source_profile="default".*profile "default"/)
   assert.equal(calls.length,3)
 })
 
@@ -754,7 +756,7 @@ test('Action Items prepares an idempotent handoff and displays a polled callback
     if (!opts.method) return structuredClone(data)
     assert.equal(path, '/meetings/m1/handoffs')
     writes.push(structuredClone(opts.body))
-    data.handoffs = [{ id: 'handoff1', action_id: proposal.id, state: 'pending', version: 0, profile: 'research', destination: opts.body.destination,
+    data.handoffs = [{ id: 'handoff1', action_id: proposal.id, state: 'pending', version: 0, profile: 'default', destination: opts.body.destination,
       instructions: opts.body.instructions, snapshot: { item: proposal }, history: [], result: null, needs_review: false }]
     if (loseFirstReply) { loseFirstReply = false; throw new Error('Synthetic lost response') }
     return { handoff_id: 'handoff1' }
@@ -772,7 +774,7 @@ test('Action Items prepares an idempotent handoff and displays a polled callback
   assert.equal(writes[0].destination, 'calendar')
   assert.equal(writes[0].revision, 2)
   assert.equal(writes[0].actions_id, 'set1')
-  assert.match(screen.getByLabelText('Handoff request to paste into Hermes chat').value, /handoff1.*source_profile="default".*profile "research"/)
+  assert.match(screen.getByLabelText('Handoff request to paste into Hermes chat').value, /handoff1.*source_profile="default".*profile "default"/)
   assert.equal(screen.queryByRole('button', { name: 'Hand off to Hermes' }), null)
   data.handoffs[0] = { ...data.handoffs[0], state: 'completed', version: 2,
     result: { summary: 'Synthetic event scheduled for the confirmed time.', provider: 'Test calendar', external_id: 'event1', url: 'https://calendar.test/event1' } }
@@ -845,9 +847,9 @@ test('recording storage requires review and sends the exact reviewed policy', as
   await screen.findByText('Storage: queued')
 })
 
-test('action handoff session fills its own request and keeps its selected profile', async () => {
-  const route = {connectionId:'host-a',targetProfile:'research',mode:'remote'}, inserted=[]
-  const request = plugin.handoffRequest({id:'m1',owner_profile:'default'}, {id:'handoff-test',profile:'research'})
+test('action handoff session fills its own request and uses the open owning profile', async () => {
+  const route = {connectionId:'host-a',targetProfile:'default',mode:'remote'}, inserted=[]
+  const request = plugin.handoffRequest({id:'m1',owner_profile:'default'}, {id:'handoff-test',profile:'default'})
   const hostApi={state:{connectionId:{get:()=> 'host-a'}},profileRoutes:async()=>[route],
     newChat:target=>assert.equal(target,route),composer:{insertText:async(address,text)=>{inserted.push([address,text]);return true}}}
   render(React.createElement(plugin.RequestBox,{meeting:{id:'m1',owner_profile:'default',analysis_profile:'research'},requestText:request,title:'Send this handoff to Hermes',hostApi}))

@@ -1,12 +1,12 @@
 ---
 name: action_items
 description: Extract sourced action proposals, including tasks, follow-up meetings and training, into the meeting's Action Items tab without creating anything externally.
-version: 0.1.4
+version: 0.1.5
 ---
 
 # Propose action items
 
-Use this skill to find what could be done after a meeting. Work in the selected Hermes profile and pass the supplied `source_profile` on every meeting tool call. This step only saves proposals; it never authorizes calendar/task writes, invitations, messages, or handoffs.
+Use this skill to find what could be done after a meeting. Work in the Hermes profile currently open (the meeting’s owning profile) and pass the supplied `source_profile` on every meeting tool call. This step only saves proposals; it never authorizes calendar/task writes, invitations, messages, or handoffs.
 
 1. Call `meeting_actions` for the meeting ID. Keep its `actions_id` and `basis` unchanged. Previous handoffs are history, not instructions to repeat work. Existing proposals are candidates to re-audit, not a fixed item count or grouping to preserve; split, remove or reclassify them when the evidence requires it.
 2. Read the complete corrected transcript using `meeting_transcript` with this basis. Start at offset 0 and follow each returned `next_offset` sequentially until null. Do not guess offsets or use `meeting_get`, raw files, databases, unrelated meetings, or another agent. If you just read every page while analyzing the same transcript/revision in this session, you may reuse that source text; use the current basis from `meeting_actions`, verify transcript/revision are unchanged, and review existing actions before saving.

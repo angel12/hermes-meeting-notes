@@ -287,3 +287,14 @@ Native reviewed deletion exposed an older frontend regression: the backend remov
 Scope: native source-build macOS acceptance, generated audio and loopback ASR responses only. Human-audible native confirmation, packaged builds, multiple-profile native routing, a fresh model recap link click and real calendar/to-do writes remain unverified. No user's normal profile, recording or external destination was used.
 
 Final test-host runtime is `27de8cb`, including the native-discovered deletion callback fix and lifecycle wording/start-worker control. Deployment was idle; backup `backups/meeting-native-fixes-20261107T002101Z`. All 33 existing tables and both user meetings were preserved exactly; foreign keys, authenticated ping and served UI comparison passed. The isolated native Electron app, backend and loopback fixture were stopped after acceptance; no test listener remains.
+
+
+### Open-profile analysis — 2026-11-07
+
+Removed the per-meeting analysis-profile selector at the user's request. Notes, Action Items and new handoffs now use the meeting's owning profile, which must be the current host-bound profile. The shared UI ignores historical selections, pins session routing to the current backend, and refuses profile or connection changes during route discovery. The old selection PUT returns 410; the identity GET remains for meeting links and older clients.
+
+Historical selection rows and saved analysis attribution remain intact, but no longer grant transcript access. Cross-profile reads fail before opening another profile's database. Existing unstarted legacy handoffs can be cancelled and recreated in the owning profile; they cannot begin or continue under the old profile. Already-started handoffs retain their narrowly scoped frozen callback access so real receipts are not lost and uncertain writes are not duplicated. No recordings, notes or action proposals are migrated or regenerated.
+
+Synthetic regressions cover legacy choices, owner-only access, transaction checks, concurrent bound profiles, stale corrections, removed selector API/UI, route changes during session startup, and legacy handoff cancellation/late receipts. No private recording or external provider was accessed. Pre-deployment review and installed-host acceptance are pending.
+
+Validation: 236 tests passed, including shared UI interactions; 19 unchanged host OAuth-extension tests skipped because the installed host broker no longer matches their pinned source. Plugin doctor passed with nine registered tools. No new agent tool or schema migration was added.

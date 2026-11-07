@@ -182,24 +182,13 @@ class Store:
         return result
 
     def check_analysis_profile(self, db, meeting):
-        row = db.execute('SELECT profile FROM meeting_profiles WHERE meeting=?',(meeting,)).fetchone()
-        selected = row['profile'] if row else getattr(self,'owner_profile',None)
-        actor = getattr(self,'analysis_actor',None)
-        if actor is not None and (actor != selected or meeting != getattr(self,'analysis_meeting',None)):
-            raise ValueError('This meeting is not assigned to the current Hermes profile')
-        return selected
-
-    def select_profile(self, meeting, profile, revision):
-        with self.db() as db:
-            db.execute('BEGIN IMMEDIATE')
-            current = db.execute('SELECT revision FROM meetings WHERE id=?',(meeting,)).fetchone()
-            if not current or type(revision) is not int or current['revision'] != revision:
-                raise ValueError('Meeting changed; refresh before choosing its profile')
-            if self.check_analysis_profile(db,meeting) != profile:
-                db.execute('INSERT OR REPLACE INTO meeting_profiles VALUES(?,?)',(meeting,profile))
-                # Invalidates in-flight notes and marks earlier analyses for review.
-                db.execute('UPDATE meetings SET revision=revision+1 WHERE id=?',(meeting,))
-        return self.get(meeting)
+        # Keep the old selection table as historical data, but ignore it. Analysis
+        # belongs to the profile serving this meeting, just like its transcript.
+        owner = getattr(self, 'owner_profile', None)
+        actor = getattr(self, 'analysis_actor', None)
+        if actor is not None and (actor != owner or meeting != getattr(self, 'analysis_meeting', None)):
+            raise ValueError('This meeting belongs to another Hermes profile')
+        return owner
 
     def save_analysis(self, snapshot, payload, *, provider=None, model=None, origin=None):
         from .analysis import fingerprint, validate

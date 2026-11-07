@@ -36,19 +36,9 @@ def current_profile(available=None):
 
 
 def options():
-    available = catalog()
-    return {'current':current_profile(available),'profiles':list(available)}
-
-
-def select(svc, meeting, profile, revision):
-    available = catalog()
-    owner = current_profile(available)
-    if svc.root.resolve() != available[owner]/'plugin-data'/'meeting_notes':
-        raise ValueError('Meeting storage does not match the current profile')
-    if not isinstance(profile,str) or profile not in available:
-        raise ValueError('Choose an existing Hermes profile on this host')
-    svc.owner_profile = owner
-    return svc.select_profile(meeting,profile,revision)
+    # Kept for result-link identity checks and older clients, not profile selection.
+    actor = current_profile()
+    return {'current': actor, 'profiles': [actor]}
 
 
 def analysis_service(meeting, source_profile=None):
@@ -56,8 +46,8 @@ def analysis_service(meeting, source_profile=None):
     available = catalog()
     actor = current_profile(available)
     source = actor if source_profile is None else source_profile
-    if not isinstance(source,str) or source not in available:
-        raise ValueError('The importing Hermes profile is unavailable on this host')
+    if source != actor:
+        raise ValueError('Open this meeting in its owning Hermes profile; cross-profile analysis is no longer supported')
     root = available[source]/'plugin-data'/'meeting_notes'
     if not (root/'data.sqlite').is_file():
         raise ValueError('The importing profile has no Meeting Notes data')
@@ -67,12 +57,8 @@ def analysis_service(meeting, source_profile=None):
     with sqlite3.connect((root/'data.sqlite').as_uri()+'?mode=ro',uri=True) as db:
         if not db.execute('SELECT 1 FROM meetings WHERE id=?',(meeting,)).fetchone():
             raise ValueError('Meeting not found in the importing profile')
-        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meeting_profiles'").fetchone()
-        row = db.execute('SELECT profile FROM meeting_profiles WHERE meeting=?',(meeting,)).fetchone() if exists else None
-        if actor != (row[0] if row else source):
-            raise ValueError('This meeting is not assigned to the current Hermes profile')
+    # Historical meeting_profiles rows no longer grant another profile access.
     # Never redirect paths from a model, change HERMES_HOME, or read credentials.
-    # Selection is the explicit, per-meeting grant. Check it again inside get/save.
     svc = Service(root)
     svc.owner_profile = source
     svc.analysis_actor = actor
@@ -86,7 +72,8 @@ def handoff_service(meeting, handoff_id, source_profile=None):
     """A frozen handoff grant permits its original actor to report late receipts.
 
     This does not grant access to the current transcript after profile revocation.
-    Begin rechecks the current meeting selection; read returns only the frozen grant.
+    Begin requires the owning profile; read returns only the frozen grant.
+    Legacy cross-profile handoffs can only read/report an already-started outcome.
     """
     from .service import Service
     available = catalog()

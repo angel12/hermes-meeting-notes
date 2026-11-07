@@ -13,16 +13,16 @@ _workers = {}
 
 def service():
     from agent.secret_scope import is_multiplex_active, serves_routed_profile
-    from plugins.plugin_storage import plugin_data_dir
     if is_multiplex_active() or serves_routed_profile():
         raise ValueError('Meeting Notes MVP requires a dedicated single-profile host')
+    from plugins.plugin_storage import plugin_data_dir
     from .profiles import current_profile
     svc = Service(plugin_data_dir('meeting_notes'))
     try:
         svc.owner_profile = current_profile()
     except ValueError:
         # Local import/transcription do not need a catalog identity. Profile
-        # sharing remains fail-closed in select() and analysis_service().
+        # analysis remains fail-closed in analysis_service().
         svc.owner_profile = None
     return svc
 

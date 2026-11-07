@@ -52,7 +52,7 @@ def view(svc, meeting, *, short_source_ids=False):
         row['snapshot'] = json.loads(row['snapshot'])
         row['result'] = json.loads(row['result']) if row['result'] else None
         row['history'] = json.loads(row['history'])
-        row['needs_review'] = (row['revision'] != snapshot['revision'] or row['transcript'] != snapshot['active'] or row['action_id'] not in ids)
+        row['needs_review'] = (row['revision'] != snapshot['revision'] or row['transcript'] != snapshot['active'] or row['action_id'] not in ids or row['profile'] != snapshot['owner_profile'])
     result = {'meeting_id': meeting, 'basis': basis_for(snapshot), 'actions_id': record['id'] if record else None,
             'items': items, 'sources': record['sources'] if record else {},
             'needs_review': projected['needs_review'] if projected else False,
@@ -137,7 +137,7 @@ def create_handoff(svc, meeting, action_id, actions_id, revision, destination, i
     snapshot = svc.get(meeting)
     actor = snapshot['analysis_profile']
     if not actor or not snapshot['owner_profile']:
-        raise ValueError('Choose an available Hermes profile before handing off an action')
+        raise ValueError('The current Hermes profile could not be identified; reopen the meeting in its owning profile')
     request = dict(action_id=action_id, actions_id=actions_id, revision=revision, destination=destination, instructions=instructions)
     digest = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
     with svc.db() as db:
@@ -180,6 +180,8 @@ def user_update(svc, meeting, handoff_id, version, operation, instructions=''):
         row = db.execute('SELECT * FROM action_handoffs WHERE id=? AND meeting=?', (handoff_id, meeting)).fetchone()
         if not row or type(version) is not int or row['version'] != version:
             raise ValueError('Handoff changed; refresh before updating')
+        if operation == 'continue' and row['profile'] != svc.owner_profile:
+            raise ValueError('This legacy handoff belongs to another profile; cancel it and review a new handoff here')
         if operation == 'cancel':
             if row['state'] not in ('pending', 'needs_input'):
                 raise ValueError('Only an unstarted handoff or one waiting for details can be cancelled')
@@ -207,8 +209,7 @@ def callback(svc, meeting, handoff_id, operation, version=None, result=None, att
                 or meeting != getattr(svc, 'handoff_meeting', None)):
             raise ValueError('This handoff is not assigned to the current profile')
         m = db.execute('SELECT active,revision FROM meetings WHERE id=?', (meeting,)).fetchone()
-        selected = db.execute('SELECT profile FROM meeting_profiles WHERE meeting=?', (meeting,)).fetchone()
-        profile = selected[0] if selected else svc.owner_profile
+        profile = svc.owner_profile
         record = latest(db, meeting)
         current_ids = {i['id'] for i in record['items']} if record else set()
         stale = (m['active'] != row['transcript'] or m['revision'] != row['revision'] or profile != row['profile'] or row['action_id'] not in current_ids)
