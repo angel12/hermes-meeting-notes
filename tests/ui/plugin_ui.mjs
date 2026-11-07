@@ -184,10 +184,10 @@ test('upload hashes 8-byte synthetic chunks, finalizes and opens the meeting', a
   writes.slice(1, 4).forEach((c, i) => {
     const expected = createHash('sha256').update(bytes.slice(i * 8, i * 8 + 8)).digest('hex')
     assert.equal(new URL(c.path, 'https://x').searchParams.get('sha'), expected)
-    assert.equal(c.timeoutMs, 30000)
+    assert.equal(c.timeoutMs, 120000)
     assert.equal(c.upload.bytes.byteLength, Math.min(8, 20 - i * 8))
   })
-  assert.equal(writes[4].timeoutMs, 30000)
+  assert.equal(writes[4].timeoutMs, 120000)
   assert.ok(screen.getByRole('heading', { name: 'Synthetic planning sync' }))
 })
 
@@ -213,7 +213,7 @@ test('OAuth remote upload uses advertised JSON transport with identical chunk by
     const actual=Buffer.from(c.body.base64,'base64'), expected=Buffer.from(bytes.slice(i*8,i*8+8))
     assert.deepEqual(actual,expected)
     assert.equal(new URL(c.path,'https://host').searchParams.get('sha'),createHash('sha256').update(expected).digest('hex'))
-    assert.equal(c.timeoutMs,30000)
+    assert.equal(c.timeoutMs,120000)
   })
 })
 

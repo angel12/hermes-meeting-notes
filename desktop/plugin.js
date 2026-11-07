@@ -6,7 +6,7 @@ import { cloneElement, createElement as h, Fragment, useCallback, useEffect, use
 const STYLE_ID = 'hermes-meeting-notes-styles'
 const POLL_MS = 3000
 const MAX_UPLOAD = 512 * 1024 * 1024
-const UPLOAD_TIMEOUT_MS = 30000
+const UPLOAD_TIMEOUT_MS = 120000
 const PLAY_WINDOW_MAX = 30
 
 // Disk plugins are not scanned by Tailwind. Every rule is scoped under .mn and
