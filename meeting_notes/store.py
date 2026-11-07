@@ -90,6 +90,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS storage_settings(id INTEGER PRIMARY KEY CHECK(id=1), namespace TEXT NOT NULL, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS storage_locations(path TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS upload_locations(upload TEXT PRIMARY KEY REFERENCES uploads(id), path TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS composition_audio(meeting TEXT NOT NULL REFERENCES meetings(id),
+                part INTEGER NOT NULL, recording TEXT NOT NULL, playback TEXT NOT NULL,
+                PRIMARY KEY(meeting, part));
             CREATE TABLE IF NOT EXISTS audio_assets(meeting TEXT PRIMARY KEY REFERENCES meetings(id),
                 playback TEXT NOT NULL, frames INTEGER NOT NULL, pcm_sha TEXT NOT NULL, archive_mode TEXT NOT NULL, recording_sha TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS storage_jobs(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),

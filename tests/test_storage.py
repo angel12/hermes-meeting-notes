@@ -123,6 +123,16 @@ def test_compressed_recordings_combine_and_play_across_boundary(recorded):
     assert clip(svc, combined, 3.5, 1) == pcm[-16000:] + second_pcm[:16000]
     assert storage.status(svc, combined) == {'combined': True}
     with pytest.raises(ValueError): storage.enqueue(svc, combined)
+    from meeting_notes.composition import organize_audio
+    from meeting_notes import deletion
+    disk = svc.root.parent/'combined-disk'; disk.mkdir()
+    configured = config(svc, disk)
+    owned = organize_audio(svc, combined)
+    assert Path(owned['directory']).parent == Path(configured['managed_path'])/'audio'
+    for source in (mid, second):
+        deletion.remove(svc, source, deletion.review(svc, source)['token'], True)
+    assert clip(svc, combined, 3.5, 1) == pcm[-16000:] + second_pcm[:16000]
+
 
 
 def test_failed_conversion_keeps_current_files_and_retry_is_explicit(recorded, monkeypatch):

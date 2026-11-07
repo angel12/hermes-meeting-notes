@@ -142,3 +142,104 @@ def test_combined_api_does_not_start_worker(recordings,monkeypatch):
     mid=response.json()['id']
     assert client.get(f'/meetings/{mid}').json()['recordings'][0]['meeting_id']==ids[0]
     assert client.get(f'/meetings/{mid}/audio?start=3.5&duration=1').status_code==200
+    organized = client.post(f'/meetings/{mid}/organize-audio', json={})
+    assert organized.status_code == 200
+    assert organized.json()['owns_audio']
+    assert client.post(f'/meetings/{mid}/organize-audio', json={}).json() == organized.json()
+    assert client.get(f'/meetings/{mid}/audio?start=3.5&duration=1').status_code == 200
+
+
+def test_owned_audio_survives_source_deletion_and_cleans_up(recordings):
+    from pathlib import Path
+    from meeting_notes import deletion, storage
+    svc, ids = recordings
+    request = {**body(svc, ids), 'own_audio': True}
+    old_audio = set((svc.root/'audio').iterdir())
+    with svc.db() as db:
+        names = [Path(db.execute('SELECT audio FROM meetings WHERE id=?', (i,)).fetchone()[0]).name for i in ids]
+    mid = svc.combine(**request)['id']
+    status = storage.status(svc, mid)
+    folder = Path(status['directory'])
+    assert status['owns_audio']
+    assert status['files'] == [f'{i:02d}-{name}' for i, name in enumerate(names, 1)]
+    assert not any(p.exists() for p in old_audio)
+    expected = svc.audio_window(mid, 3.5, 1)
+    assert svc.combine(**request)['id'] == mid
+    for source in ids:
+        assert svc.audio_window(source, 0, .1)['base64']
+        preview = deletion.review(svc, source)
+        assert not preview['blockers']
+        deletion.remove(svc, source, preview['token'], True)
+        assert svc.audio_window(mid, 3.5, 1) == expected
+    assert svc.get(mid)['segments']
+    assert all((folder/name).exists() for name in status['files'])
+    deletion.remove(svc, mid, deletion.review(svc, mid)['token'], True)
+    assert not list(folder.iterdir())
+    with svc.db() as db:
+        assert not db.execute('PRAGMA foreign_key_check').fetchall()
+
+
+def test_organize_existing_preserves_other_combinations_and_storage_moves(recordings):
+    from meeting_notes import deletion, storage
+    from meeting_notes.composition import organize_audio
+    svc, ids = recordings
+    legacy = svc.combine(**body(svc, ids))['id']
+    request = {**body(svc, ids[::-1]), 'request_id': 'owned', 'own_audio': True}
+    owned = svc.combine(**request)['id']
+    expected = svc.audio_window(owned, 3.5, 1)
+    assert deletion.review(svc, ids[0])['dependencies'] == [{'id': legacy, 'title': 'Whole meeting'}]
+    organize_audio(svc, legacy)
+    for source in ids:
+        storage.enqueue(svc, source)
+        assert storage.run_once(svc)
+        assert svc.audio_window(owned, 3.5, 1) == expected
+        deletion.remove(svc, source, deletion.review(svc, source)['token'], True)
+    deletion.remove(svc, legacy, deletion.review(svc, legacy)['token'], True)
+    assert svc.audio_window(owned, 3.5, 1) == expected
+    deletion.remove(svc, owned, deletion.review(svc, owned)['token'], True)
+    assert not [p for p in (svc.root/'audio').rglob('*') if p.is_file()]
+
+
+def test_organize_failed_copy_keeps_sources_and_can_retry(recordings, monkeypatch):
+    from meeting_notes import storage
+    from meeting_notes.composition import organize_audio
+    svc, ids = recordings
+    mid = svc.combine(**body(svc, ids))['id']
+    expected = svc.audio_window(mid, 3.5, 1)
+    original_files = {p: p.read_bytes() for p in (svc.root/'audio').iterdir()}
+    copy = storage.copy_verified
+    count = 0
+    def fail(source, target):
+        nonlocal count
+        count += 1
+        copy(source, target)
+        if count == 3:
+            raise OSError('Disk full')
+    monkeypatch.setattr(storage, 'copy_verified', fail)
+    with pytest.raises(OSError, match='Disk full'):
+        organize_audio(svc, mid)
+    assert storage.status(svc, mid) == {'combined': True}
+    assert svc.audio_window(mid, 3.5, 1) == expected
+    assert {p: p.read_bytes() for p in (svc.root/'audio').iterdir()} == original_files
+    monkeypatch.setattr(storage, 'copy_verified', copy)
+    organize_audio(svc, mid)
+    assert svc.audio_window(mid, 3.5, 1) == expected
+
+
+def test_organize_rejects_active_work_and_symlink(recordings, tmp_path):
+    from meeting_notes.composition import organize_audio
+    svc, ids = recordings
+    mid = svc.combine(**body(svc, ids))['id']
+    with svc.db() as db:
+        db.execute("UPDATE jobs SET state='preparing' WHERE meeting=?", (ids[0],))
+    with pytest.raises(ValueError, match='Wait'):
+        organize_audio(svc, mid)
+    with svc.db() as db:
+        db.execute("UPDATE jobs SET state='completed' WHERE meeting=?", (ids[0],))
+    path = svc.root/'audio'/f'{ids[0]}.wav'
+    target = tmp_path/'outside.wav'
+    path.rename(target)
+    path.symlink_to(target)
+    with pytest.raises(ValueError, match='symlink'):
+        organize_audio(svc, mid)
+    assert target.exists()

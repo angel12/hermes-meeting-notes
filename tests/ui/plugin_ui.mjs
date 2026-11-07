@@ -452,6 +452,7 @@ test('combine form orders snapshots and preserves request ID after an uncertain 
   fireEvent.click(screen.getByRole('button', { name: 'Move recording 2 up' }))
   assert.match(within(screen.getByRole('list', { name: 'Recording order' })).getAllByRole('listitem')[0].textContent, /^Recording 2/)
   fireEvent.change(screen.getByLabelText('Combined meeting title'), { target: { value: 'Full session' } })
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Move audio into a numbered folder owned by the combined meeting' }))
   assert.equal(calls.length, 0, 'selecting and reordering must not write')
   fireEvent.click(screen.getByRole('button', { name: 'Create combined meeting' }))
   await screen.findByRole('alert')
@@ -460,6 +461,7 @@ test('combine form orders snapshots and preserves request ID after an uncertain 
   await waitFor(() => assert.deepEqual(opened, ['new-combined']))
   assert.deepEqual(calls[1], calls[0], 'a retry must use the same operation ID and source snapshots')
   assert.equal(calls[0].path, '/meetings/combine')
+  assert.equal(calls[0].body.own_audio, true)
   assert.deepEqual(calls[0].body.sources, [{ id: 'part2', active: 'transcript2', revision: 2 }, { id: 'part1', active: 'transcript1', revision: 1 }])
   assert.deepEqual(busy, [true, false, true, false])
 })
@@ -1104,6 +1106,24 @@ test('deleting the selected linked meeting clears the workspace, audio, URL and 
   cleanup(); mount(b)
   await screen.findByText('No meetings yet.')
   assert.equal(staleReads, 0)
+})
+
+test('existing combined meeting can take ownership of numbered audio', async () => {
+  const calls = []
+  const rest = async (path, options) => {
+    if (!options) return { combined: true }
+    calls.push({ path, ...options })
+    return { combined: true, owns_audio: true, directory: '/managed/audio/combined-example', files: ['01-first', '02-second'] }
+  }
+  render(React.createElement(plugin.RecordingStorage, { meeting: { id: 'combined', recordings: [{part: 1}, {part: 2}] }, rest }))
+  const button = await screen.findByRole('button', { name: 'Move audio into numbered folder' })
+  await waitFor(() => assert.equal(button.disabled, false))
+  fireEvent.click(button)
+  await screen.findByText('/managed/audio/combined-example')
+  assert.equal(calls[0].path, '/meetings/combined/organize-audio')
+  assert.equal(calls[0].method, 'POST')
+  assert.ok(screen.getByText('01-first'))
+  assert.equal(screen.queryByRole('button', { name: 'Move audio into numbered folder' }), null)
 })
 
 let failed = 0

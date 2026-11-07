@@ -21,7 +21,7 @@ def _review(db, meeting):
         raise ValueError('Meeting not found')
     dependencies = []
     for combined in db.execute('SELECT c.meeting,c.parts,m.title FROM compositions c JOIN meetings m ON m.id=c.meeting'):
-        if any(p['meeting_id'] == meeting for p in json.loads(combined['parts'])):
+        if any(p['meeting_id'] == meeting for p in json.loads(combined['parts'])) and not db.execute('SELECT 1 FROM composition_audio WHERE meeting=?', (combined['meeting'],)).fetchone():
             dependencies.append({'id': combined['meeting'], 'title': combined['title']})
     jobs = [dict(r) for r in db.execute('SELECT * FROM jobs WHERE meeting=?', (meeting,))]
     storage_jobs = [dict(r) for r in db.execute('SELECT * FROM storage_jobs WHERE meeting=?', (meeting,))]
@@ -57,6 +57,8 @@ def _paths(svc, db, meeting):
     row = db.execute('SELECT audio FROM meetings WHERE id=?', (meeting,)).fetchone()
     if row['audio']:
         paths.update((row['audio'], str(Path(row['audio']).parent / f'{meeting}.wav')))
+    for asset in db.execute('SELECT recording,playback FROM composition_audio WHERE meeting=?', (meeting,)):
+        paths.update(asset)
     for table, column, predicate in (
         ('audio_assets', 'playback', 'meeting=?'), ('transcripts', 'raw', 'meeting=?'),
         ('attempts', 'raw', 'job IN (SELECT id FROM jobs WHERE meeting=?)'),
@@ -73,6 +75,8 @@ def _paths(svc, db, meeting):
 
 def checked_file(svc, value):
     path = Path(value)
+    if path.parent.name != 'audio' and path.parent.parent.name == 'audio':
+        return storage.check_audio_path(svc, path)
     root = path.parent.parent
     if not path.is_absolute() or path.parent.name not in ('audio', 'raw', 'uploads'):
         raise ValueError('Recording path is outside managed storage')
@@ -120,7 +124,7 @@ def remove(svc, meeting, token, confirm):
                 db.execute(f'DELETE FROM {table} WHERE upload IN (SELECT id FROM uploads WHERE meeting=?)', (meeting,))
             db.execute('DELETE FROM corrections WHERE transcript IN (SELECT id FROM transcripts WHERE meeting=?)', (meeting,))
             for table in ('action_handoffs', 'action_sets', 'analyses', 'transcripts', 'compositions', 'meeting_profiles',
-                          'audio_assets', 'storage_jobs', 'uploads', 'jobs'):
+                          'audio_assets', 'composition_audio', 'storage_jobs', 'uploads', 'jobs'):
                 db.execute(f'DELETE FROM {table} WHERE meeting=?', (meeting,))
             db.execute('DELETE FROM meetings WHERE id=?', (meeting,))
     cleanup(svc)
@@ -150,7 +154,7 @@ def cleanup(svc, *, automatic=False):
                     path = checked_file(svc, file['path'])
                     # A reimport may reuse a content-addressed audio filename.
                     used = db.execute('SELECT 1 FROM meetings WHERE audio=? UNION ALL SELECT 1 FROM audio_assets WHERE playback=? UNION ALL SELECT 1 FROM transcripts WHERE raw=? UNION ALL SELECT 1 FROM attempts WHERE raw=? UNION ALL SELECT 1 FROM storage_outputs WHERE path=?', (str(path),)*5).fetchone()
-                    if used:
+                    if used or storage.audio_referenced(db, path):
                         continue
                     if path.exists():
                         if storage.digest(path) != file['sha']:

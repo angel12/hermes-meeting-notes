@@ -116,13 +116,36 @@ def upload_root(svc, db, upload):
     return check_root(svc, row[0] if row else svc.root)
 
 
+def check_audio_path(svc, path):
+    """Validate flat audio files and numbered files in a combination folder."""
+    path = Path(path)
+    parent = path.parent
+    if parent.name != 'audio' and parent.parent.name == 'audio':
+        if parent.is_symlink() or not parent.is_dir():
+            raise ValueError('Combined audio directory is unavailable')
+        parent = parent.parent
+    if parent.name != 'audio' or parent.is_symlink() or not path.is_absolute():
+        raise ValueError('Audio path is outside managed storage')
+    check_root(svc, parent.parent)
+    if path.is_symlink():
+        raise ValueError('Managed audio cannot be a symlink')
+    if path.exists() and not path.is_file():
+        raise ValueError('Managed audio is not a regular file')
+    return path
+
+
+def audio_referenced(db, path):
+    return db.execute('SELECT 1 FROM meetings WHERE audio=? UNION ALL SELECT 1 FROM audio_assets WHERE playback=? '
+                      'UNION ALL SELECT 1 FROM composition_audio WHERE recording=? OR playback=?', (str(path),)*4).fetchone()
+
+
 def playback_path(svc, db, meeting):
     asset = db.execute('SELECT playback FROM audio_assets WHERE meeting=?', (meeting,)).fetchone()
     original = db.execute('SELECT audio FROM meetings WHERE id=?', (meeting,)).fetchone()
     if not original or not original[0]:
         raise ValueError('Choose an original recording')
     path = Path(asset[0]) if asset else Path(original[0]).parent/f'{meeting}.wav'
-    check_root(svc, path.parent.parent)
+    check_audio_path(svc, path)
     if path.is_symlink():
         raise ValueError('Managed audio cannot be a symlink')
     return path
@@ -134,7 +157,11 @@ def status(svc, meeting):
         if not original:
             raise ValueError('Meeting not found')
         if not original['audio']:
-            return {'combined': True}
+            assets = db.execute('SELECT part,recording,playback FROM composition_audio WHERE meeting=? ORDER BY part', (meeting,)).fetchall()
+            if not assets:
+                return {'combined': True}
+            return {'combined': True, 'owns_audio': True, 'directory': str(Path(assets[0]['recording']).parent),
+                    'files': [Path(a['recording']).name for a in assets]}
         asset = db.execute('SELECT * FROM audio_assets WHERE meeting=?', (meeting,)).fetchone()
         job = db.execute('SELECT id,state,error,result,cleanup FROM storage_jobs WHERE meeting=? ORDER BY rowid DESC LIMIT 1', (meeting,)).fetchone()
         playback = Path(asset['playback']) if asset else Path(original['audio']).parent/f'{meeting}.wav'
@@ -204,8 +231,8 @@ def cleanup(svc):
         for row in abandoned:
             path = Path(row['path'])
             try:
-                check_root(svc, path.parent.parent)
-                used = db.execute('SELECT 1 FROM meetings WHERE audio=? UNION ALL SELECT 1 FROM audio_assets WHERE playback=?', (str(path), str(path))).fetchone()
+                check_audio_path(svc, path)
+                used = audio_referenced(db, path)
                 if not used and not path.is_symlink():
                     path.unlink(missing_ok=True)
                 db.execute('DELETE FROM storage_outputs WHERE path=?', (str(path),))
@@ -223,8 +250,8 @@ def cleanup(svc):
             for file in json.loads(row['cleanup']):
                 path = Path(file['path'])
                 try:
-                    check_root(svc, path.parent.parent)
-                    referenced = db.execute('SELECT 1 FROM meetings WHERE audio=? UNION ALL SELECT 1 FROM audio_assets WHERE playback=?', (str(path), str(path))).fetchone()
+                    check_audio_path(svc, path)
+                    referenced = audio_referenced(db, path)
                     if referenced or path.is_symlink():
                         remaining.append(file); continue
                     if path.exists() and digest(path) != file['sha']:
@@ -274,8 +301,8 @@ def run_once(svc):
     outputs, committed = [], False
     try:
         value = json.loads(job['settings']); root = check_root(svc, value['managed_path'])
-        check_root(svc, source.parent.parent)
-        check_root(svc, playback.parent.parent)
+        check_audio_path(svc, source)
+        check_audio_path(svc, playback)
         if source.is_symlink() or playback.is_symlink() or digest(source) != source_sha:
             raise ValueError('Stored recording changed; no storage change was made')
         frames = audio.pcm_info(playback); pcm_sha = audio.pcm_digest(playback)
@@ -343,7 +370,7 @@ def run_once(svc):
             with svc.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 for path in outputs:
-                    used = db.execute('SELECT 1 FROM meetings WHERE audio=? UNION ALL SELECT 1 FROM audio_assets WHERE playback=?', (str(path), str(path))).fetchone()
+                    used = audio_referenced(db, path)
                     if not used:
                         try: path.unlink(missing_ok=True)
                         except OSError: pass
