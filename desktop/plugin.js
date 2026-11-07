@@ -1576,7 +1576,8 @@ function MeetingWorkspace({ ctx, target, onLock }) {
   }
 
   const deleted = (result, deletedId) => {
-    mutation.current++; closePlayer(); selectedId.current = null; if (lastSelected === id) lastSelected = null; setSelected(null)
+    if (parseMeetingLink(globalThis.window?.location.hash)?.meeting === deletedId) window.history.replaceState(window.history.state, '', '#/meeting-notes')
+    mutation.current++; closePlayer(); selectedId.current = null; if (lastSelected === deletedId) lastSelected = null; setSelected(null)
     setView('home'); setActionError(''); setPollError(''); setMeetings(rows => rows.filter(m => m.id !== deletedId))
     setNotice({ tone: result.pending_files ? 'warn' : 'ok', text: result.pending_files ? 'Meeting deleted. Some managed files await cleanup; reconnect storage and use Retry file cleanup in settings.' : 'Meeting and its managed files deleted.' })
   }

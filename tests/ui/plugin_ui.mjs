@@ -951,6 +951,41 @@ test('an in-flight job after restart offers worker recovery without resubmitting
   assert.equal(screen.queryByRole('button', { name: 'Retry transcription' }), null)
 })
 
+test('deleting the selected linked meeting clears the workspace, audio, URL and remembered selection', async () => {
+  const b = makeBackend()
+  const baseRest = b.rest
+  let removed = false, staleReads = 0
+  b.rest = async (p, opts = {}) => {
+    if (p === '/meetings/m1/deletion') return { id: 'm1', title: 'Synthetic planning sync', token: 'review', combined: false, counts: {}, dependencies: [], blockers: [] }
+    if (p === '/meetings/m1/delete' && opts.method === 'POST') {
+      b.calls.push({ path: p, ...opts }); removed = true
+      return { deleted: true, pending_files: 0 }
+    }
+    if (p === '/meetings' && removed) return []
+    if (p === '/meetings/m1' && removed) { staleReads++; throw new Error('Meeting not found') }
+    return baseRest(p, opts)
+  }
+  window.history.replaceState({}, '', '#/meeting-notes?meeting=m1&tab=notes&profile=default')
+  mount(b)
+  await screen.findByRole('heading', { name: 'Synthetic planning sync' })
+  fireEvent.click(screen.getByRole('tab', { name: /^Transcript/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Play from 0:00, Host' }))
+  const player = await screen.findByLabelText('Audio from 0:00')
+  const url = player.src
+  fireEvent.click(screen.getByRole('button', { name: 'Delete meeting…' }))
+  fireEvent.change(await screen.findByLabelText('Type the meeting title to confirm'), { target: { value: 'Synthetic planning sync' } })
+  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: 'Permanently delete meeting' }))
+  await screen.findByRole('heading', { name: 'Start with a recording' })
+  assert.equal(screen.queryByRole('heading', { name: 'Synthetic planning sync' }), null)
+  assert.equal(document.querySelector('audio'), null)
+  assert.ok(revoked.includes(url))
+  assert.equal(window.location.hash, '#/meeting-notes')
+  cleanup(); mount(b)
+  await screen.findByText('No meetings yet.')
+  assert.equal(staleReads, 0)
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }
