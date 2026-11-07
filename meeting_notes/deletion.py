@@ -76,7 +76,7 @@ def _paths(svc, db, meeting):
 def checked_file(svc, value):
     path = Path(value)
     if path.parent.name != 'audio' and path.parent.parent.name == 'audio':
-        return storage.check_audio_path(svc, path)
+        return storage.check_audio_path(svc, path, allow_missing=True)
     root = path.parent.parent
     if not path.is_absolute() or path.parent.name not in ('audio', 'raw', 'uploads'):
         raise ValueError('Recording path is outside managed storage')
@@ -164,4 +164,5 @@ def cleanup(svc, *, automatic=False):
                 except (OSError, ValueError):
                     pending.append(file)
             db.execute('UPDATE deletions SET files=? WHERE meeting=?', (json.dumps(pending), row['meeting']))
+        storage.cleanup_folders(svc, db)
     return status(svc)

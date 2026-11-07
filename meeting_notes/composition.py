@@ -5,9 +5,6 @@ import hashlib
 import io
 import json
 import math
-import os
-import shutil
-import time
 import wave
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,10 +16,7 @@ from . import storage, audio as audio_files
 def combine(svc, request_id, title, date, timezone, sources, own_audio=False):
     if type(own_audio) is not bool:
         raise ValueError('own_audio must be a boolean')
-    result = _combine(svc, request_id, title, date, timezone, sources, own_audio)
-    if own_audio:
-        organize_audio(svc, result['id'])
-    return result
+    return _combine(svc, request_id, title, date, timezone, sources, own_audio)
 
 
 def _combine(svc, request_id, title, date, timezone, sources, own_audio):
@@ -103,76 +97,15 @@ def _combine(svc, request_id, title, date, timezone, sources, own_audio):
                    (transcript,meeting,str(raw_path),hashlib.sha256(raw).hexdigest(),json.dumps(segments)))
         db.execute('INSERT INTO jobs(id,meeting,state) VALUES(?,?,?)',(uid(),meeting,'completed'))
         db.execute('INSERT INTO compositions VALUES(?,?,?,?)',(meeting,request_id,request_hash,json.dumps(parts)))
+        if own_audio:
+            from .composition_storage import enqueue
+            enqueue(svc, meeting, db=db)
     return {'id':meeting}
 
 
-def organize_audio(svc, meeting):
-    """Give a combination independent audio references; move only verified copies.
-
-    Source entries share the new paths until deleted. Other owning combinations
-    keep their own references, and legacy combinations follow their source entries.
-    """
-    from .deletion import _local, _working
-    _local(svc)
-    folder = None
-    committed = False
-    created = False
-    try:
-        with svc.db() as db:
-            db.execute('BEGIN IMMEDIATE')
-            composition = db.execute('SELECT parts FROM compositions WHERE meeting=?', (meeting,)).fetchone()
-            if not composition:
-                raise ValueError('Choose a combined meeting')
-            if db.execute('SELECT 1 FROM composition_audio WHERE meeting=?', (meeting,)).fetchone():
-                return storage.status(svc, meeting)
-            if _working(db):
-                raise ValueError('Wait for transcription and storage work to finish before moving audio')
-            parts = json.loads(composition['parts'])
-            root = storage.check_root(svc, storage.settings(svc, db)['managed_path'])
-            folder = root/'audio'/('combined-'+meeting+'-'+uid())
-            if (root/'audio').is_symlink():
-                raise ValueError('Managed audio directory cannot be a symlink')
-            folder.mkdir(mode=0o700)
-            created = True
-            cleanup_files = []
-            for part in parts:
-                source = db.execute('SELECT audio,sha FROM meetings WHERE id=?', (part['meeting_id'],)).fetchone()
-                if not source:
-                    raise ValueError('A source recording is unavailable')
-                original = storage.check_audio_path(svc, source['audio'])
-                playback = storage.playback_path(svc, db, part['meeting_id'])
-                asset = db.execute('SELECT * FROM audio_assets WHERE meeting=?', (part['meeting_id'],)).fetchone()
-                expected_sha = asset['recording_sha'] if asset else source['sha']
-                if storage.digest(original) != expected_sha:
-                    raise ValueError('A source recording has changed')
-                if audio_files.pcm_info(playback) != part['frames']:
-                    raise ValueError('A source playback recording has changed')
-                pcm_sha = audio_files.pcm_digest(playback)
-                if asset and pcm_sha != asset['pcm_sha']:
-                    raise ValueError('A source playback recording has changed')
-                recording = folder/f"{part['part']:02d}-{original.name}"
-                prepared = folder/f"{part['part']:02d}-playback-{playback.name}"
-                storage.copy_verified(original, recording)
-                storage.copy_verified(playback, prepared)
-                if storage.digest(recording) != expected_sha or audio_files.pcm_digest(prepared) != pcm_sha:
-                    raise ValueError('Source audio changed while moving; the original references were kept')
-                db.execute('INSERT INTO composition_audio VALUES(?,?,?,?)', (meeting, part['part'], str(recording), str(prepared)))
-                db.execute('UPDATE meetings SET audio=? WHERE id=?', (str(recording), part['meeting_id']))
-                db.execute('INSERT OR REPLACE INTO audio_assets VALUES(?,?,?,?,?,?)',
-                           (part['meeting_id'], str(prepared), part['frames'], pcm_sha,
-                            asset['archive_mode'] if asset else 'original', expected_sha))
-                cleanup_files.extend({'path': str(p), 'sha': storage.digest(p)} for p in (original, playback))
-            for directory in (folder, folder.parent):
-                fd = os.open(directory, os.O_RDONLY)
-                try: os.fsync(fd)
-                finally: os.close(fd)
-            db.execute("INSERT INTO storage_jobs(id,meeting,settings,state,cleanup,created) VALUES(?,?,?,'completed',?,?)",
-                       (uid(), meeting, '{}', json.dumps(cleanup_files), time.time()))
-        committed = True
-    finally:
-        if created and not committed:
-            shutil.rmtree(folder)
-    storage.cleanup(svc)
+def organize_audio(svc, meeting, expected_settings=None):
+    from .composition_storage import enqueue
+    enqueue(svc, meeting, expected_settings=expected_settings)
     return storage.status(svc, meeting)
 
 

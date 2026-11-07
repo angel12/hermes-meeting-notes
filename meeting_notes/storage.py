@@ -116,12 +116,12 @@ def upload_root(svc, db, upload):
     return check_root(svc, row[0] if row else svc.root)
 
 
-def check_audio_path(svc, path):
+def check_audio_path(svc, path, *, allow_missing=False):
     """Validate flat audio files and numbered files in a combination folder."""
     path = Path(path)
     parent = path.parent
     if parent.name != 'audio' and parent.parent.name == 'audio':
-        if parent.is_symlink() or not parent.is_dir():
+        if parent.is_symlink() or (not parent.is_dir() and not (allow_missing and not parent.exists())):
             raise ValueError('Combined audio directory is unavailable')
         parent = parent.parent
     if parent.name != 'audio' or parent.is_symlink() or not path.is_absolute():
@@ -151,30 +151,39 @@ def playback_path(svc, db, meeting):
     return path
 
 
+def job_status(db, meeting):
+    job = db.execute('SELECT id,state,error,result,cleanup FROM storage_jobs WHERE meeting=? ORDER BY rowid DESC LIMIT 1', (meeting,)).fetchone()
+    return {'id': job['id'], 'state': job['state'], 'error': job['error'],
+            'result': json.loads(job['result']) if job['result'] else None,
+            'cleanup_pending': bool(json.loads(job['cleanup']))} if job else None
+
+
 def status(svc, meeting):
     with svc.db() as db:
         original = db.execute('SELECT audio,sha FROM meetings WHERE id=?', (meeting,)).fetchone()
         if not original:
             raise ValueError('Meeting not found')
+        job = job_status(db, meeting)
         if not original['audio']:
             assets = db.execute('SELECT part,recording,playback FROM composition_audio WHERE meeting=? ORDER BY part', (meeting,)).fetchall()
-            if not assets:
-                return {'combined': True}
-            return {'combined': True, 'owns_audio': True, 'directory': str(Path(assets[0]['recording']).parent),
-                    'files': [Path(a['recording']).name for a in assets]}
+            result = {'combined': True}
+            if job:
+                result['job'] = job
+            if assets:
+                result.update(owns_audio=True, directory=str(Path(assets[0]['recording']).parent),
+                              files=[Path(a['recording']).name for a in assets])
+            return result
         asset = db.execute('SELECT * FROM audio_assets WHERE meeting=?', (meeting,)).fetchone()
-        job = db.execute('SELECT id,state,error,result,cleanup FROM storage_jobs WHERE meeting=? ORDER BY rowid DESC LIMIT 1', (meeting,)).fetchone()
         playback = Path(asset['playback']) if asset else Path(original['audio']).parent/f'{meeting}.wav'
     def size(path):
         try: return Path(path).stat().st_size
         except OSError: return None
-    return {'combined': False, 'directory': str(Path(original['audio']).parent.parent),
+    parent = Path(original['audio']).parent
+    root = parent.parent if parent.name == 'audio' else parent.parent.parent
+    return {'combined': False, 'directory': str(root), 'audio_directory': str(parent),
             'archive_mode': asset['archive_mode'] if asset else 'original', 'original_sha256': original['sha'],
             'recording_bytes': size(original['audio']), 'playback_bytes': size(playback),
-            'playback_format': playback.suffix.lstrip('.'),
-            'job': {'id': job['id'], 'state': job['state'], 'error': job['error'],
-                    'result': json.loads(job['result']) if job['result'] else None,
-                    'cleanup_pending': bool(json.loads(job['cleanup']))} if job else None}
+            'playback_format': playback.suffix.lstrip('.'), 'job': job}
 
 
 def enqueue(svc, meeting, automatic=False, expected_settings=None, db=None):
@@ -218,9 +227,45 @@ def copy_verified(source, target):
         raise ValueError('Audio copy verification failed')
 
 
+def cleanup_folders(svc, db):
+    # Only registered directories, and only when empty. Never recursively remove.
+    for row in db.execute('SELECT path FROM audio_folders').fetchall():
+        folder = Path(row[0])
+        try:
+            check_audio_path(svc, folder/'probe', allow_missing=True)
+            if folder.exists():
+                folder.rmdir()
+            db.execute('DELETE FROM audio_folders WHERE path=?', (str(folder),))
+        except (OSError, ValueError):
+            pass
+
+
+def file_signature(path):
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def cleanup(svc):
-    # Playback uses the same immediate lock while reading files. Never unlink a
-    # path still referenced by a meeting, including interrupted/repeated migration.
+    # Hash old copies without blocking playback or writers. Recheck references
+    # and file identity under the short unlink lock before removing anything.
+    with svc.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute("UPDATE storage_jobs SET state='failed',error='Storage work was interrupted; the current audio was kept. Retry the move.' WHERE state='running' AND lease<?", (time.time(),))
+        if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
+            return
+        candidates = {file['path'] for row in db.execute("SELECT cleanup FROM storage_jobs WHERE state='completed' AND cleanup!='[]'")
+                      for file in json.loads(row[0]) if not audio_referenced(db, file['path'])}
+    verified = {}
+    for value in candidates:
+        path = Path(value)
+        try:
+            check_audio_path(svc, path, allow_missing=True)
+            before = file_signature(path)
+            sha = digest(path)
+            if before == file_signature(path):
+                verified[value] = (sha, before)
+        except (OSError, ValueError):
+            pass
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
@@ -231,7 +276,7 @@ def cleanup(svc):
         for row in abandoned:
             path = Path(row['path'])
             try:
-                check_audio_path(svc, path)
+                check_audio_path(svc, path, allow_missing=True)
                 used = audio_referenced(db, path)
                 if not used and not path.is_symlink():
                     path.unlink(missing_ok=True)
@@ -250,16 +295,17 @@ def cleanup(svc):
             for file in json.loads(row['cleanup']):
                 path = Path(file['path'])
                 try:
-                    check_audio_path(svc, path)
+                    check_audio_path(svc, path, allow_missing=True)
                     referenced = audio_referenced(db, path)
                     if referenced or path.is_symlink():
                         remaining.append(file); continue
-                    if path.exists() and digest(path) != file['sha']:
+                    if path.exists() and verified.get(str(path)) != (file['sha'], file_signature(path)):
                         remaining.append(file); continue
                     path.unlink(missing_ok=True)
                 except (OSError, ValueError):
                     remaining.append(file)
             db.execute('UPDATE storage_jobs SET cleanup=? WHERE id=?', (json.dumps(remaining), row['id']))
+        cleanup_folders(svc, db)
 
 
 def run_once(svc):
@@ -279,14 +325,16 @@ def run_once(svc):
             db.execute("UPDATE storage_jobs SET state='cancelled',error='Automatic storage policy changed before work started; review and apply current settings explicitly.' WHERE id=?", (job['id'],))
             return True
         db.execute("UPDATE storage_jobs SET state='running',owner=?,lease=?,error=NULL WHERE id=?", (owner, time.time()+LEASE, job['id']))
-        source = Path(db.execute('SELECT audio FROM meetings WHERE id=?', (job['meeting'],)).fetchone()[0])
-        asset = db.execute('SELECT * FROM audio_assets WHERE meeting=?', (job['meeting'],)).fetchone()
-        playback = Path(asset['playback']) if asset else source.parent/f"{job['meeting']}.wav"
-        was_opus = bool(asset and asset['archive_mode'] == 'opus')
-        source_sha = asset['recording_sha'] if asset else db.execute('SELECT sha FROM meetings WHERE id=?', (job['meeting'],)).fetchone()[0]
-        plan = db.execute('SELECT p.frames FROM asr_plans p JOIN jobs j ON j.id=p.job WHERE j.meeting=?', (job['meeting'],)).fetchone()
-        expected_frames = asset['frames'] if asset else (plan[0] if plan else None)
-        expected_pcm = asset['pcm_sha'] if asset else None
+        is_composition = json.loads(job['settings']).get('kind') == 'composition'
+        if not is_composition:
+            source = Path(db.execute('SELECT audio FROM meetings WHERE id=?', (job['meeting'],)).fetchone()[0])
+            asset = db.execute('SELECT * FROM audio_assets WHERE meeting=?', (job['meeting'],)).fetchone()
+            playback = Path(asset['playback']) if asset else source.parent/f"{job['meeting']}.wav"
+            was_opus = bool(asset and asset['archive_mode'] == 'opus')
+            source_sha = asset['recording_sha'] if asset else db.execute('SELECT sha FROM meetings WHERE id=?', (job['meeting'],)).fetchone()[0]
+            plan = db.execute('SELECT p.frames FROM asr_plans p JOIN jobs j ON j.id=p.job WHERE j.meeting=?', (job['meeting'],)).fetchone()
+            expected_frames = asset['frames'] if asset else (plan[0] if plan else None)
+            expected_pcm = asset['pcm_sha'] if asset else None
     def fenced(db):
         return db.execute("SELECT 1 FROM storage_jobs WHERE id=? AND owner=? AND state='running' AND lease>=?", (job['id'], owner, time.time())).fetchone()
     stop = threading.Event()
@@ -300,6 +348,11 @@ def run_once(svc):
     thread = threading.Thread(target=beat, daemon=True); thread.start()
     outputs, committed = [], False
     try:
+        if is_composition:
+            from .composition_storage import run
+            run(svc, job, owner, fenced)
+            committed = True
+            return True
         value = json.loads(job['settings']); root = check_root(svc, value['managed_path'])
         check_audio_path(svc, source)
         check_audio_path(svc, playback)
@@ -374,4 +427,8 @@ def run_once(svc):
                     if not used:
                         try: path.unlink(missing_ok=True)
                         except OSError: pass
+        try:
+            cleanup(svc)
+        except (OSError, ValueError):
+            pass  # Durable allocations/receipts remain available for the next cleanup.
     return True

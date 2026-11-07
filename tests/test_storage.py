@@ -127,7 +127,9 @@ def test_compressed_recordings_combine_and_play_across_boundary(recorded):
     from meeting_notes import deletion
     disk = svc.root.parent/'combined-disk'; disk.mkdir()
     configured = config(svc, disk)
-    owned = organize_audio(svc, combined)
+    organize_audio(svc, combined)
+    assert storage.run_once(svc)
+    owned = storage.status(svc, combined)
     assert Path(owned['directory']).parent == Path(configured['managed_path'])/'audio'
     for source in (mid, second):
         deletion.remove(svc, source, deletion.review(svc, source)['token'], True)

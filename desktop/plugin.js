@@ -455,7 +455,7 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
     h(Field, { label: 'Meeting timezone' }, h('input', { className: 'mn-input', value: timezone, disabled: busy, onChange: e => setTimezone(e.target.value) })),
     h('p', { className: 'mn-muted' }, 'Recordings play back to back; gaps or overlaps are not inferred. Each recording keeps separate speakers until you merge them. This copies the current corrected transcripts; later edits to originals do not change the combined meeting. Generate new notes after reviewing it.'),
     h('label', null, h('input', { type: 'checkbox', checked: ownAudio, disabled: busy, onChange: e => setOwnAudio(e.target.checked) }), ' Move audio into a numbered folder owned by the combined meeting'),
-    ownAudio && h('p', { className: 'mn-muted' }, 'Creates a new folder in your configured audio storage with 01-, 02-, … filenames in playback order. You can then delete the original meeting entries; their notes are not copied. Original files on your recorder/computer stay unchanged.'),
+    ownAudio && h('p', { className: 'mn-muted' }, 'Queues a background move into your configured audio storage with 01-, 02-, … filenames in playback order. After it completes, you can delete the original meeting entries; their notes are not copied. Original files on your recorder/computer stay unchanged.'),
     error && h(Callout, { tone: 'error', role: 'alert' }, error),
     btn({ type: 'submit', variant: 'default', disabled: busy || sources.length < 2 }, busy ? 'Combining…' : 'Create combined meeting'))
 }
@@ -607,11 +607,12 @@ export function RecordingStorage({ meeting, rest }) {
     if (locked.current) return
     locked.current = true; serial.current++; setBusy(true); setError('')
     try {
-      const result = await rest(`/meetings/${meeting.id}/organize-audio`, { method: 'POST', body: {} })
-      if (alive.current) setValue(result)
+      const result = await rest(`/meetings/${meeting.id}/organize-audio`, { method: 'POST', body: { confirm: true, settings: policy } })
+      if (alive.current) { setValue(result); setReview(false) }
     } catch (e) { if (alive.current) setError(errorText(e)) }
     finally { locked.current = false; if (alive.current) setBusy(false) }
   }
+  const running = ['queued', 'running'].includes(value?.job?.state)
   if (meeting.recordings?.length) return h('details', { className: 'mn-card' },
     h('summary', null, 'Audio storage'),
     value?.owns_audio
@@ -619,11 +620,18 @@ export function RecordingStorage({ meeting, rest }) {
           h('p', null, 'This combined meeting owns its audio. Original meeting entries can be deleted unless another combination still depends on them.'),
           h('p', { className: 'mn-faint' }, value.directory),
           h('ol', null, ...(value.files || []).map(file => h('li', { key: file }, file))))
-      : h(Fragment, null,
-          h('p', null, 'Move audio into a new folder in your configured audio storage, with 01-, 02-, … filenames in playback order. The combined meeting will own its audio so you can delete the original meeting entries. Their notes are not copied.'),
-          btn({ disabled: busy || !value, onClick: organize }, busy ? 'Moving audio…' : 'Move audio into numbered folder')),
+      : h('p', null, 'Move audio into a numbered folder so this combined meeting owns its audio. You can then delete the original meeting entries unless another combination needs them. Their notes are not copied.'),
+    value?.job && h('p', { role: 'status' }, `Audio move: ${value.job.state}`),
+    value?.job?.error && h(Callout, { tone: 'error' }, value.job.error),
+    value?.job?.cleanup_pending && h('p', null, 'Older copies are kept while other meetings use them or their storage is unavailable.'),
+    !review && btn({ disabled: busy || running || !value, onClick: reviewSettings },
+      value?.owns_audio ? 'Review audio relocation' : 'Review numbered audio move'),
+    review && policy && h('div', null,
+      h('p', null, `Destination: ${policy.managed_path}`),
+      h('p', null, 'Creates a new numbered folder and moves audio in the background. Current recording and playback formats are preserved; compression settings are not applied. Keep both storage locations connected until the move and cleanup finish.'),
+      btn({ disabled: busy || running, onClick: organize }, 'Confirm audio move'),
+      btn({ variant: 'ghost', disabled: busy, onClick: () => setReview(false) }, 'Cancel')),
     error && h(Callout, { tone: 'error', role: 'alert' }, error))
-  const running = ['queued', 'running'].includes(value?.job?.state)
   const size = n => n == null ? 'unavailable' : `${(n / 1048576).toFixed(1)} MiB`
   return h('details', { className: 'mn-card' }, h('summary', null, 'Audio storage'),
     value && !value.combined && h(Fragment, null,

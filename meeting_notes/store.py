@@ -93,6 +93,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS composition_audio(meeting TEXT NOT NULL REFERENCES meetings(id),
                 part INTEGER NOT NULL, recording TEXT NOT NULL, playback TEXT NOT NULL,
                 PRIMARY KEY(meeting, part));
+            CREATE TABLE IF NOT EXISTS composition_audio_details(meeting TEXT NOT NULL, part INTEGER NOT NULL,
+                data TEXT NOT NULL, PRIMARY KEY(meeting, part),
+                FOREIGN KEY(meeting,part) REFERENCES composition_audio(meeting,part) ON DELETE CASCADE);
+            CREATE TABLE IF NOT EXISTS audio_folders(path TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS audio_assets(meeting TEXT PRIMARY KEY REFERENCES meetings(id),
                 playback TEXT NOT NULL, frames INTEGER NOT NULL, pcm_sha TEXT NOT NULL, archive_mode TEXT NOT NULL, recording_sha TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS storage_jobs(id TEXT PRIMARY KEY, meeting TEXT NOT NULL REFERENCES meetings(id),

@@ -1108,22 +1108,33 @@ test('deleting the selected linked meeting clears the workspace, audio, URL and 
   assert.equal(staleReads, 0)
 })
 
-test('existing combined meeting can take ownership of numbered audio', async () => {
+test('combined audio move reviews destination and shows background job state', async () => {
   const calls = []
+  const policy = { managed_path: '/managed' }
   const rest = async (path, options) => {
+    if (path === '/storage-settings') return policy
     if (!options) return { combined: true }
     calls.push({ path, ...options })
-    return { combined: true, owns_audio: true, directory: '/managed/audio/combined-example', files: ['01-first', '02-second'] }
+    return { combined: true, job: { state: 'queued' } }
   }
   render(React.createElement(plugin.RecordingStorage, { meeting: { id: 'combined', recordings: [{part: 1}, {part: 2}] }, rest }))
-  const button = await screen.findByRole('button', { name: 'Move audio into numbered folder' })
+  const button = await screen.findByRole('button', { name: 'Review numbered audio move' })
   await waitFor(() => assert.equal(button.disabled, false))
   fireEvent.click(button)
-  await screen.findByText('/managed/audio/combined-example')
+  await screen.findByText('Destination: /managed')
+  assert.equal(calls.length, 0)
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm audio move' }))
+  await screen.findByText('Audio move: queued')
   assert.equal(calls[0].path, '/meetings/combined/organize-audio')
-  assert.equal(calls[0].method, 'POST')
-  assert.ok(screen.getByText('01-first'))
-  assert.equal(screen.queryByRole('button', { name: 'Move audio into numbered folder' }), null)
+  assert.deepEqual(calls[0].body, { confirm: true, settings: policy })
+  assert.equal(screen.getByRole('button', { name: 'Review numbered audio move' }).disabled, true)
+})
+
+test('owned combination offers relocation after original entries are deleted', async () => {
+  const rest = async () => ({ combined: true, owns_audio: true, directory: '/old/audio/recordings-example', files: ['01-first'] })
+  render(React.createElement(plugin.RecordingStorage, { meeting: { id: 'combined', recordings: [{part: 1}] }, rest }))
+  await screen.findByText('/old/audio/recordings-example')
+  assert.equal(screen.getByRole('button', { name: 'Review audio relocation' }).disabled, false)
 })
 
 let failed = 0
