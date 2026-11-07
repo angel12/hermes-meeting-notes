@@ -936,6 +936,21 @@ test('legacy failures offer transcription retry without promising local recovery
   assert.equal(mutations(b.calls).length, 0)
 })
 
+test('an in-flight job after restart offers worker recovery without resubmitting audio', async () => {
+  const b = makeBackend()
+  const baseRest = b.rest
+  b.rest = async (p, opts = {}) => {
+    const value = await baseRest(p, opts)
+    if (p === '/meetings') return value.map(m => ({ ...m, state: 'in_flight' }))
+    if (p === '/meetings/m1') return { ...value, job: { id: 'j1', state: 'in_flight' } }
+    return value
+  }
+  await openMeeting(b)
+  fireEvent.click(screen.getByRole('button', { name: 'Start queued work' }))
+  await waitFor(() => assert.deepEqual(mutations(b.calls).map(c => c.path), ['/worker/start']))
+  assert.equal(screen.queryByRole('button', { name: 'Retry transcription' }), null)
+})
+
 let failed = 0
 for (const t of tests) {
   try { await t.fn(); console.log(`ok - ${t.name}`) }

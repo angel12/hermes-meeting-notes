@@ -363,7 +363,7 @@ function Field({ label, hint, children }) {
 // ── Sidebar ──────────────────────────────────────────────────────────────────
 
 function Sidebar({ meetings, loaded, selectedId, view, onSelect, onNew, onCombine, onSettings, onStartQueued, busy, locked }) {
-  const queued = meetings.some(m => m.state === 'queued')
+  const queued = meetings.some(m => ['queued', 'preparing', 'in_flight'].includes(m.state))
   return h('nav', { className: 'mn-side', 'aria-label': 'Meetings' },
     h('div', { className: 'mn-side-head' },
       h('h1', null, 'Meeting Notes'),
@@ -521,7 +521,7 @@ export function UploadForm({ rest, onUploaded, onBusy }) {
       progress !== null && h('progress', { className: 'mn-progress', max: 100, value: progress, 'aria-label': 'Upload progress', 'aria-valuetext': `${progress}%` }),
       h('p', { role: 'status', 'aria-live': 'polite', className: 'mn-muted' }, status ? `${status}${progress !== null && phase === 'uploading' ? ` ${progress}% uploaded.` : ''}` : ''),
       error && h(Callout, { tone: 'error', role: 'alert' }, error)),
-    h('p', { className: 'mn-faint' }, 'Uploading the same audio again opens the existing meeting instead of transcribing it twice. Transcription continues on the host if you close this page; quitting Hermes interrupts it.'))
+    h('p', { className: 'mn-faint' }, 'Uploading the same audio again opens the existing meeting instead of transcribing it twice. Transcription continues on the host if you close this page; stopping the Hermes backend can interrupt it.'))
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -785,7 +785,7 @@ function StatusPanel({ meeting, busy, act }) {
     meeting.transcription_chunks?.length > 0 && h('p', { role: 'status' },
       `${meeting.transcription_chunks.filter(c => c.state === 'completed').length} of ${meeting.transcription_chunks.length} audio chunks completed. Retry keeps completed chunks and resumes unfinished work.`),
     meeting.job.error && h('p', { className: 'mn-muted' }, `Details: ${meeting.job.error}`),
-    info.active && meeting.job.state !== 'queued' && h('p', { className: 'mn-faint' }, 'You can close this page; the host keeps working. Quitting Hermes interrupts it.'),
+    info.active && meeting.job.state !== 'queued' && h('p', { className: 'mn-faint' }, 'You can close this page; the host keeps working. Stopping the Hermes backend can interrupt it.'),
     h('div', { className: 'mn-row' },
       retry && meeting.can_recover_response && btn({ disabled: busy, onClick: () => act('Local recovery requested. No audio will be sent.', rest => rest(`/meetings/${meeting.id}/recover-response`, { method: 'POST' })) }, 'Recover saved response'),
       retry && btn({ variant: 'default', disabled: busy, onClick: () => act('Retry requested. Completed chunks are retained.', rest => rest(`/meetings/${meeting.id}/retry`, { method: 'POST' })) }, 'Retry transcription'),
