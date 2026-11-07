@@ -653,6 +653,7 @@ test('failed xAI check blocks activation and can recover without changing settin
   fail=true
   fireEvent.click(screen.getByRole('button',{name:'Check host support again'}))
   await screen.findByText(/Could not check host support: Backend restarting/)
+  assert.equal(screen.queryByRole('region',{name:'Set up xAI host support'}),null)
   assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true)
   fail=false
   fireEvent.click(screen.getByRole('button',{name:'Check host support again'}))

@@ -76,7 +76,7 @@ cp "$HERMES_SOURCE/hermes_cli/plugin_provider_requests.py" "$OAUTH_BACKUP_DIR/pl
 python3 deploy/hermes-test/install-provider-requests.py "$HERMES_SOURCE" deploy/hermes-test/provider-requests.patch
 ```
 
-Keep the backup directory for rollback. The installer requires the exact reviewed module hash and a clean patch check; if it reports that the API changed, stop and review compatibility rather than bypassing the check. It also refuses an already-patched module. It does not read credentials or send audio.
+Keep the backup from the first successful application for rollback. A later refused attempt may have copied an already-patched module; that copy cannot undo the extension. The installer requires the exact reviewed module hash and a clean patch check; if it reports that the API changed, stop and review compatibility rather than bypassing the check. It also refuses an already-patched module. It does not read credentials or send audio.
 
 Restart the backend process using that checkout, including any profile plugin-host processes, then reopen Meeting Notes. A page refresh alone does not reload Python, and closing Desktop can leave its backend running. The missing-extension notice should disappear. Sign in to xAI in the importing profile, save the connection, and select **Use this connection**. Availability of the button verifies host API support, not the account's STT entitlement.
 

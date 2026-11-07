@@ -676,20 +676,19 @@ export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, dis
 function XaiSetupGuide() {
   const commands = `(
 set -e
-# Replace both paths with directories on the Hermes backend machine.
 HERMES_SOURCE='/absolute/path/to/hermes-agent'
 MEETING_PLUGIN='/absolute/path/to/plugins/meeting_notes'
 OAUTH_BACKUP_DIR=$(mktemp -d "\${TMPDIR:-/tmp}/meeting-notes-oauth-backup.XXXXXX")
 cp "$HERMES_SOURCE/hermes_cli/plugin_provider_requests.py" "$OAUTH_BACKUP_DIR/plugin_provider_requests.py"
-printf 'Keep this backup for rollback: %s\\n' "$OAUTH_BACKUP_DIR"
 python3 "$MEETING_PLUGIN/deploy/hermes-test/install-provider-requests.py" "$HERMES_SOURCE" "$MEETING_PLUGIN/deploy/hermes-test/provider-requests.patch"
+printf 'Keep this backup for rollback: %s\\n' "$OAUTH_BACKUP_DIR"
 )`
   return h('section', { className: 'mn-card', 'aria-label': 'Set up xAI host support' },
     h('h3', null, 'Set up xAI host support'),
     h('p', null, 'An xAI sign-in and a GitHub plugin install do not add the required host API. This is a separate, experimental Hermes source patch. This page checks support; it does not apply the patch or access your credentials.'),
     h('ol', null,
-      h('li', null, h('strong', null, 'Find the backend. '), 'For Webapp, use a terminal on its server, not your browser’s computer. For Desktop, use the machine running the selected connection. Identify its Hermes source checkout and the installed Meeting Notes directory. The patch affects every profile using that checkout.'),
-      h('li', null, h('strong', null, 'Prepare the host. '), 'Wait for chats, transcriptions and storage jobs to finish. Back up the profile database and all audio folders together. For Docker, apply the extension while building the image using the linked instructions. If a packaged host has no editable source checkout, ask its administrator for an extended build.'),
+      h('li', null, h('strong', null, 'Find the backend. '), 'For Webapp, use a terminal on its server, not your browser’s computer. For Desktop, use the machine running Desktop’s selected Hermes backend (local or remote). Identify its Hermes source checkout and the installed Meeting Notes directory. The patch affects every profile using that checkout.'),
+      h('li', null, h('strong', null, 'Prepare the host. '), 'Wait for chats, transcriptions and storage jobs to finish. Back up the profile database and all audio folders together. For Docker, ask the host administrator to adapt the linked pinned test-image build for your deployment. If a packaged host has no editable source checkout, ask its administrator for an extended build.'),
       h('li', null, h('strong', null, 'Apply the checked patch to a source installation. '), 'Replace both paths below, then run the commands on the backend. Keep the printed module-backup location. The installer checks the exact reviewed module and patch compatibility. If it refuses a changed or already-patched module, stop; do not bypass the check.',
         h('textarea', { className: 'mn-input', 'aria-label': 'Host patch commands', readOnly: true, rows: 12, value: commands, spellCheck: false })),
       h('li', null, h('strong', null, 'Restart and check again. '), 'Restart that backend and its profile plugin-host processes, then return here and choose Check host support again. Refreshing the page alone does not reload Python; closing Desktop may leave its backend running. If support is still missing, confirm the restarted backend uses the patched checkout.'),
@@ -772,7 +771,7 @@ export function SettingsForm({ rest }) {
           h('p', null, 'Sign in to xAI through Hermes on the importing backend profile. Audio is sent to xAI; subscription coverage is not guaranteed. No API-key fallback is used. Your Custom connection is kept.'),
           btn({ disabled: saving || checkingHost, onClick: checkHost }, 'Check host support again')),
         hostCheckError && h(Callout, { tone: 'error', role: 'alert' }, hostCheckError),
-        !checkingHost && connections.availability?.xai?.available !== true && h(XaiSetupGuide)),
+        !checkingHost && !hostCheckError && connections.availability?.xai?.available !== true && h(XaiSetupGuide)),
       h(Field, { label: 'Server endpoint', hint: 'HTTP(S) base URL, without credentials. Use plain HTTP only on a trusted network.' },
         h('input', { className: 'mn-input', type: 'url', value: settings.endpoint, onChange: set('endpoint'), required: true, disabled: saving || editing === 'xai' })),
       h('div', { className: 'mn-grid2' },
