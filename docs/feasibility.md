@@ -298,3 +298,5 @@ Historical selection rows and saved analysis attribution remain intact, but no l
 Synthetic regressions cover legacy choices, owner-only access, transaction checks, concurrent bound profiles, stale corrections, removed selector API/UI, route changes during session startup, and legacy handoff cancellation/late receipts. No private recording or external provider was accessed. Pre-deployment review and installed-host acceptance are pending.
 
 Validation: 236 tests passed, including shared UI interactions; 19 unchanged host OAuth-extension tests skipped because the installed host broker no longer matches their pinned source. Plugin doctor passed with nine registered tools. No new agent tool or schema migration was added.
+
+Opus approved deployment. Follow-ups map the current Desktop route name to its backend target profile (including remote aliases), use the Desktop identity when filling the draft, and update the remaining selector documentation. Focused profile/action/Desktop checks passed (35 pytest cases including all shared UI interactions). Metadata-only preflight found no running/unknown legacy cross-profile handoffs on either installation.

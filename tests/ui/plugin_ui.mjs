@@ -408,6 +408,18 @@ test('profile chat routing stays on the importing connection and fails closed', 
   await assert.rejects(plugin.analysisChatRoute(hostApi, 'research', 'host-a'), /not uniquely reachable/)
 })
 
+test('aliased Desktop profiles route and fill drafts using their UI identity', async () => {
+  const route={connectionId:'host-a',profile:'work-alias',targetProfile:'default',mode:'remote'}
+  const inserted=[]
+  const api={state:{profile:{get:()=> 'work-alias'},connectionId:{get:()=> 'host-a'}},
+    profileRoutes:async()=>[route],newChat:()=>{},composer:{insertText:async(_,text)=>{inserted.push(text);return true}}}
+  assert.equal(await plugin.analysisChatRoute(api,'default','host-a'),route)
+  assert.equal(await plugin.fillNotesDraft(api,'notes',route,{wait:async()=>{},attempts:2}),true)
+  assert.deepEqual(inserted,['notes'])
+  api.state.profile.get=()=> 'different-profile'
+  await assert.rejects(plugin.analysisChatRoute(api,'default','host-a'),/not uniquely reachable/)
+})
+
 test('session routing refuses profile or connection changes during discovery', async () => {
   for (const change of ['profile','connection']) {
     let profile='default', connection='host-a', resolve

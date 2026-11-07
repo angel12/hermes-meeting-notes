@@ -1032,8 +1032,11 @@ const CSS_ESCAPE = value => (globalThis.CSS && globalThis.CSS.escape ? globalThi
 
 export async function analysisChatRoute(hostApi, profile, connectionId) {
   if (!profile || !hostApi?.profileRoutes || !hostApi?.newChat) throw new Error('Open a Hermes chat in the current profile and paste the request below.')
+  // Desktop route names can alias the backend's profile name. Capture the
+  // current UI identity, then verify the route maps it to this meeting's owner.
+  const openProfile = hostApi.state?.profile?.get ? (hostApi.state.profile.get() || 'default') : null
   const checkCurrent = () => {
-    if (hostApi.state?.profile?.get && (hostApi.state.profile.get() || 'default') !== profile)
+    if (openProfile !== null && (hostApi.state.profile.get() || 'default') !== openProfile)
       throw new Error('The open profile changed. Reopen this meeting in its owning profile before starting a session.')
     if (hostApi.state?.connectionId?.get && (hostApi.state.connectionId.get() ?? null) !== (connectionId ?? null))
       throw new Error('The open connection changed. Reopen this meeting before starting a session.')
@@ -1042,6 +1045,7 @@ export async function analysisChatRoute(hostApi, profile, connectionId) {
   const routes = await hostApi.profileRoutes()
   checkCurrent()
   const candidates = routes.filter(r => r.targetProfile === profile &&
+    (openProfile === null || (r.profile || r.targetProfile) === openProfile) &&
     (connectionId ? r.connectionId === connectionId : r.mode === 'local'))
   if (candidates.length !== 1) throw new Error('The meeting’s profile is not uniquely reachable on this connection. Reopen the meeting in its owning profile, or copy the request into that profile’s chat.')
   return candidates[0]
@@ -1057,7 +1061,7 @@ export async function fillNotesDraft(hostApi, text, route, {
   for (let attempt = 0; attempt < attempts; attempt++) {
     await wait()
     if (globalThis.location?.hash !== initialHash) return false
-    if (route && hostApi.state?.profile && hostApi.state.profile.get() !== route.targetProfile) continue
+    if (route && hostApi.state?.profile && (hostApi.state.profile.get() || 'default') !== (route.profile || route.targetProfile)) continue
     if (route && hostApi.state?.connectionId && hostApi.state.connectionId.get() !== route.connectionId) continue
     const draft = await hostApi.composer.getDraft?.('new')
     if (draft === text) return true
