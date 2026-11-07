@@ -485,7 +485,14 @@ export function UploadForm({ rest, onUploaded, onBusy }) {
         setStatus(`Uploading part ${index + 1} of ${total}…`)
         const bytes = await chosen.slice(offset, offset + session.chunk_size).arrayBuffer()
         const sha = await sha256Hex(bytes)
-        await rest(`/uploads/${session.id}/chunks/${index}?sha=${sha}`, { method: 'PUT', upload: { filename: 'chunk', contentType: 'application/octet-stream', bytes }, timeoutMs: UPLOAD_TIMEOUT_MS })
+        if (session.chunk_transport === 'json_base64') {
+          const array = new Uint8Array(bytes)
+          const parts = []
+          for (let i = 0; i < array.length; i += 0x8000) parts.push(String.fromCharCode(...array.subarray(i, i + 0x8000)))
+          await rest(`/uploads/${session.id}/chunks/${index}/json?sha=${sha}`, { method: 'PUT', body: { base64: btoa(parts.join('')) }, timeoutMs: UPLOAD_TIMEOUT_MS })
+        } else {
+          await rest(`/uploads/${session.id}/chunks/${index}?sha=${sha}`, { method: 'PUT', upload: { filename: 'chunk', contentType: 'application/octet-stream', bytes }, timeoutMs: UPLOAD_TIMEOUT_MS })
+        }
         setProgress(Math.round(Math.min(offset + bytes.byteLength, chosen.size) / chosen.size * 100))
       }
       setPhase('finalizing')

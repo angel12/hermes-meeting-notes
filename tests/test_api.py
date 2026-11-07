@@ -36,6 +36,64 @@ def test_settings_refuse_credentials(client):
     assert 'key' not in client.get('/api/plugins/meeting_notes/settings').json()
 
 
+def test_json_upload_preserves_chunks_hashes_and_finalizes_once(client, monkeypatch):
+    import base64
+    import hashlib
+    from meeting_notes import runtime, service
+    api = sys.modules['meeting_api_test']
+    monkeypatch.setattr(service, 'CHUNK', 8)
+    monkeypatch.setattr(api, 'CHUNK', 8)
+    monkeypatch.setattr(runtime, 'start', lambda: None)
+    data = bytes(range(20))
+    base = '/api/plugins/meeting_notes/uploads'
+    upload = client.post(base, json=dict(size=len(data), title='Synthetic JSON upload', date='2026-11-05T12:00:00Z', timezone='UTC')).json()
+    assert upload['chunk_transport'] == 'json_base64'
+    assert upload['chunk_size'] == 8
+    path = f'{base}/{upload["id"]}'
+    assert client.post(path+'/finalize').status_code == 400
+    for index, offset in enumerate(range(0, len(data), 8)):
+        chunk = data[offset:offset+8]
+        url = f'{path}/chunks/{index}/json?sha={hashlib.sha256(chunk).hexdigest()}'
+        body = {'base64': base64.b64encode(chunk).decode()}
+        assert client.put(url, json=body).status_code == 200
+        assert client.put(url, json=body).status_code == 200  # lost-response retry
+        assert client.put(url, json={'base64':base64.b64encode(b'wrong').decode()}).status_code == 400
+        other = bytes([255])*len(chunk)
+        conflict = f'{path}/chunks/{index}/json?sha={hashlib.sha256(other).hexdigest()}'
+        assert client.put(conflict, json={'base64':base64.b64encode(other).decode()}).status_code == 400
+    result = client.post(path+'/finalize').json()
+    assert client.post(path+'/finalize').json()['id'] == result['id']
+    svc = runtime.service()
+    with svc.db() as db:
+        meeting = db.execute('SELECT audio,sha FROM meetings WHERE id=?', (result['id'],)).fetchone()
+        assert Path(meeting['audio']).read_bytes() == data
+        assert meeting['sha'] == hashlib.sha256(data).hexdigest()
+        assert db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
+    assert client.put(f'{path}/chunks/0/json?sha=wrong', json={'base64':'AA=='}).status_code == 400
+
+
+@pytest.mark.parametrize('body', [b'not json', b'[]', b'{"base64":12}', b'{"base64":"!!!!"}',
+    b'{"base64":"AA==","extra":1}', b'{"base64":"\\u2603"}', b'['*1500])
+def test_json_upload_rejects_malformed_input_without_writing(client, body):
+    from meeting_notes import runtime
+    response = client.put('/api/plugins/meeting_notes/uploads/missing/chunks/0/json?sha=no', content=body)
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Expected a base64-encoded upload chunk'
+    with runtime.service().db() as db:
+        assert db.execute('SELECT COUNT(*) FROM chunks').fetchone()[0] == 0
+
+
+def test_json_upload_bounds_wire_and_decoded_bytes(client, monkeypatch):
+    import base64
+    api = sys.modules['meeting_api_test']
+    monkeypatch.setattr(api, 'CHUNK', 8)
+    path = '/api/plugins/meeting_notes/uploads/missing/chunks/0/json?sha=no'
+    # Eight and nine bytes have the same encoded length; enforce decoded size too.
+    assert client.put(path, json={'base64':base64.b64encode(b'x'*9).decode()}).status_code == 413
+    assert client.put(path, json={'base64':'A'*16}).status_code == 413
+    assert client.put(path, content=iter([b' '*600, b' '*600])).status_code == 413
+
+
 def test_tool_manifest_matches_registration():
     import yaml
     root=Path(__file__).parents[1]

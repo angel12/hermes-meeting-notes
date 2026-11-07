@@ -191,6 +191,32 @@ test('upload hashes 8-byte synthetic chunks, finalizes and opens the meeting', a
   assert.ok(screen.getByRole('heading', { name: 'Synthetic planning sync' }))
 })
 
+test('OAuth remote upload uses advertised JSON transport with identical chunk bytes and hashes', async () => {
+  const b=makeBackend(), original=b.rest
+  b.rest=async(path,opts)=>{
+    assert.equal(opts?.upload,undefined,'OAuth remote bridge refuses multipart')
+    const result=await original(path,opts)
+    return path==='/uploads'? {...result,chunk_transport:'json_base64'}:result
+  }
+  mount(b)
+  await screen.findByRole('button',{name:/^Synthetic planning sync/})
+  fireEvent.click(screen.getAllByRole('button',{name:'New recording'})[0])
+  fireEvent.change(await screen.findByLabelText('Meeting title'),{target:{value:'Synthetic remote upload'}})
+  const bytes=Uint8Array.from([0,255,128,13,10,1,2,3,250,251,252,253,254,255,0,8,9])
+  Object.defineProperty(screen.getByLabelText('Recording'),'files',{value:[new File([bytes],'remote.wav')],configurable:true})
+  fireEvent.click(screen.getByRole('button',{name:'Upload and transcribe'}))
+  await screen.findByText(/already imported/,{}, {timeout:4000})
+  const writes=mutations(b.calls)
+  assert.deepEqual(writes.map(c=>`${c.method} ${c.path.split('?')[0]}`),['POST /uploads','PUT /uploads/u1/chunks/0/json','PUT /uploads/u1/chunks/1/json','PUT /uploads/u1/chunks/2/json','POST /uploads/u1/finalize'])
+  const {createHash}=await import('node:crypto')
+  writes.slice(1,4).forEach((c,i)=>{
+    const actual=Buffer.from(c.body.base64,'base64'), expected=Buffer.from(bytes.slice(i*8,i*8+8))
+    assert.deepEqual(actual,expected)
+    assert.equal(new URL(c.path,'https://host').searchParams.get('sha'),createHash('sha256').update(expected).digest('hex'))
+    assert.equal(c.timeoutMs,30000)
+  })
+})
+
 async function openMeeting(b) {
   mount(b)
   fireEvent.click(await screen.findByRole('button', { name: /^Synthetic planning sync/ }))

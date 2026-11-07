@@ -7,7 +7,7 @@ Early implementation of an import → diarized transcript → corrected speakers
 ## Implemented
 
 - Reviewed meeting deletion with combined-recording dependency checks, durable managed-file cleanup and preserved external items.
-- Durable SQLite metadata, 8 MiB hashed multipart chunks, duplicate-chunk conflict detection, idempotent finalize and cleanup of expired unfinished uploads.
+- Durable SQLite metadata, 8 MiB hashed upload chunks, duplicate-chunk conflict detection, idempotent finalize and cleanup of expired unfinished uploads. Updated backends advertise JSON/base64 transport for Desktop OAuth remote connections; multipart remains supported for older clients.
 - Separate saved Custom (NeMo-Speech.cpp) and optional xAI OAuth transcription connections, each with its own model, timeout and chunk limit. xAI requires the experimental host API extension described below.
 - Configurable host audio directory, explicit migration of existing recordings, lossless FLAC playback compression, and opt-in smaller Opus recording archives with verified replacement and durable recovery.
 - Configurable maximum audio duration per ASR request (60 minutes by default). Longer recordings are split into bounded requests and assembled into one meeting with full-recording timestamps. Successful chunks are retained across explicit retries.
@@ -51,6 +51,8 @@ hermes plugins validate . --install-deps
 Install this package using Hermes' supported plugin installation flow, enable the Python plugin and opt into its Desktop half. The Webapp must load the desktop plugin on its serving host. See [Hermes' unified package documentation](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk#one-package-both-sdks). The unified package was loaded by the remote Webapp host; browser tests preselect its persisted enabled preference. Installation through the supported CLI and the interactive Desktop toggle passed in an isolated native source-build profile; packaged distribution remains untested.
 
 Configure `MEETING_NOTES_ASR_KEY` through Hermes secret configuration. The plugin reads it exclusively through `agent.secret_scope.get_secret`; never put it in source, the settings API, or the browser. Endpoint, model and timeout are editable in the prototype UI. The default endpoint is the development LAN server; other users must configure their own reachable NeMo-Speech.cpp server. Plain HTTP is intended only for a trusted LAN; use TLS otherwise.
+
+The shared UI uses authenticated JSON/base64 upload chunks when the backend advertises support. This avoids Desktop's multipart-upload restriction on OAuth-protected remote Hermes connections; it does not change transcription-provider authentication. Each request carries at most 8 MiB of audio (about 10.7 MiB encoded), with the same size/hash checks and idempotent finalization as multipart. A reverse proxy must allow that request size. Update the plugin on the backend and reload its Python API as well as the UI. With an older backend, the UI retains multipart uploads; use its Webapp if Desktop reports that remote file uploads are unsupported.
 
 ### Optional xAI transcription
 

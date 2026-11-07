@@ -1,5 +1,8 @@
 """Imported independently by Hermes. Host supplies authentication/secret scope."""
 import importlib.util
+import base64
+import binascii
+import json
 from pathlib import Path
 import sys
 
@@ -11,7 +14,7 @@ if 'meeting_notes' not in sys.modules:
     sys.modules['meeting_notes'] = _mod
     _spec.loader.exec_module(_mod)
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from meeting_notes import runtime
 from meeting_notes.service import CHUNK
 from meeting_notes import actions
@@ -180,12 +183,38 @@ def update_handoff(ident: str, handoff_id: str, body: dict):
 def upload(body: dict):
     if set(body) != {'size','title','date','timezone'}:
         raise HTTPException(400,'Expected size, title, date, timezone')
-    return call(lambda:runtime.service().begin_upload(**body))
+    return {**call(lambda:runtime.service().begin_upload(**body)), 'chunk_transport': 'json_base64'}
 
 
 @router.put('/uploads/{ident}/chunks/{index}')
 async def chunk(ident: str,index: int,sha: str,file: UploadFile = File(...)):
     data = await file.read(CHUNK+1)
+    return call(lambda:runtime.service().chunk(ident,index,data,sha))
+
+
+@router.put('/uploads/{ident}/chunks/{index}/json')
+async def json_chunk(ident: str, index: int, sha: str, request: Request):
+    # Desktop's OAuth remote bridge supports JSON, but not multipart uploads.
+    # Bound the wire body before parsing; decoded bytes use the same durable
+    # upload validation/path as multipart. Host authentication is unchanged.
+    encoded_limit = 4 * ((CHUNK + 2) // 3)
+    wire_limit = encoded_limit + 1024
+    body = bytearray()
+    async for part in request.stream():
+        if len(body) + len(part) > wire_limit:
+            raise HTTPException(413, 'Upload chunk is too large')
+        body.extend(part)
+    try:
+        value = json.loads(body)
+        if not isinstance(value, dict) or set(value) != {'base64'} or not isinstance(value['base64'], str):
+            raise ValueError()
+        if len(value['base64']) > encoded_limit:
+            raise HTTPException(413, 'Upload chunk is too large')
+        data = base64.b64decode(value['base64'], validate=True)
+    except (ValueError, RecursionError, binascii.Error):
+        raise HTTPException(400, 'Expected a base64-encoded upload chunk') from None
+    if len(data) > CHUNK:
+        raise HTTPException(413, 'Upload chunk is too large')
     return call(lambda:runtime.service().chunk(ident,index,data,sha))
 
 
