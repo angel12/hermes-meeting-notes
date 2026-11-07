@@ -583,6 +583,7 @@ test('optional xAI saves separately and switching back restores Custom settings'
   render(React.createElement(plugin.SettingsForm,{rest:b.rest}))
   const selector=await screen.findByLabelText('Connection to configure')
   fireEvent.change(selector,{target:{value:'xai'}})
+  await screen.findByText(/xAI host support detected/)
   assert.equal(b.calls.filter(c=>c.method).length,0)
   assert.equal(screen.getByLabelText('Server endpoint').value,'https://api.x.ai/v1')
   assert.equal(screen.getByLabelText('Server endpoint').disabled,true)
@@ -612,10 +613,88 @@ test('an unextended host can save optional xAI settings but cannot activate it',
   const b=connectionBackend(false)
   render(React.createElement(plugin.SettingsForm,{rest:b.rest}))
   fireEvent.change(await screen.findByLabelText('Connection to configure'),{target:{value:'xai'}})
-  assert.ok(screen.getByText(/Host extension required/))
+  await screen.findByRole('region',{name:'Set up xAI host support'})
+  assert.ok(screen.getByText(/xAI host extension required/))
   assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true)
   assert.equal(screen.getByRole('button',{name:'Save settings'}).disabled,false)
   assert.equal(document.querySelectorAll('input[type=password]').length,0)
+  assert.ok(screen.getByLabelText('Host patch commands').value.includes('install-provider-requests.py'))
+  assert.ok(screen.getByText(/Refreshing the page alone does not reload Python/))
+  assert.equal(b.calls.filter(c=>c.method).length,0)
+})
+
+test('xAI support recheck preserves draft and Custom, never activates automatically', async () => {
+  const b=connectionBackend(false)
+  render(React.createElement(plugin.SettingsForm,{rest:b.rest}))
+  fireEvent.change(await screen.findByLabelText('Connection to configure'),{target:{value:'xai'}})
+  await screen.findByRole('region',{name:'Set up xAI host support'})
+  fireEvent.change(screen.getByLabelText('Request timeout (seconds)'),{target:{value:'1001'}})
+  const original=structuredClone(b.get().connections.custom)
+  b.get().availability.xai.available=true
+  fireEvent.click(screen.getByRole('button',{name:'Check host support again'}))
+  await screen.findByText(/xAI host support detected/)
+  assert.equal(screen.queryByRole('region',{name:'Set up xAI host support'}),null)
+  assert.equal(screen.getByLabelText('Request timeout (seconds)').value,'1001')
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true) // draft unsaved
+  assert.equal(b.calls.filter(c=>c.method).length,0)
+  assert.deepEqual(b.get().connections.custom,original)
+  assert.equal(b.get().active,'custom')
+  fireEvent.change(screen.getByLabelText('Request timeout (seconds)'),{target:{value:'900'}})
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,false)
+})
+
+test('failed xAI check blocks activation and can recover without changing settings', async () => {
+  const b=connectionBackend()
+  let fail=false
+  const rest=async (path,opts)=>{ if(fail && path==='/connections') throw new Error('Backend restarting'); return b.rest(path,opts) }
+  render(React.createElement(plugin.SettingsForm,{rest}))
+  fireEvent.change(await screen.findByLabelText('Connection to configure'),{target:{value:'xai'}})
+  await screen.findByText(/xAI host support detected/)
+  fail=true
+  fireEvent.click(screen.getByRole('button',{name:'Check host support again'}))
+  await screen.findByText(/Could not check host support: Backend restarting/)
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true)
+  fail=false
+  fireEvent.click(screen.getByRole('button',{name:'Check host support again'}))
+  await screen.findByText(/xAI host support detected/)
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,false)
+  assert.equal(b.calls.filter(c=>c.method).length,0)
+})
+
+test('active xAI on an unextended host also shows setup', async () => {
+  const b=connectionBackend(false)
+  b.get().active='xai'
+  let release, reads=0
+  const rest=async(path,opts)=>{
+    if(path==='/connections' && ++reads===2) return new Promise(resolve=>{release=resolve})
+    return b.rest(path,opts)
+  }
+  render(React.createElement(plugin.SettingsForm,{rest}))
+  await screen.findByText('Checking xAI host support…')
+  release(structuredClone(b.get()))
+  await screen.findByRole('region',{name:'Set up xAI host support'})
+  fireEvent.change(screen.getByLabelText('Connection to configure'),{target:{value:'custom'}})
+  assert.equal(screen.queryByRole('region',{name:'Set up xAI host support'}),null)
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,false)
+})
+
+test('leaving xAI during a support check ignores a late failure', async () => {
+  const b=connectionBackend()
+  let rejectCheck,reads=0
+  const rest=async(path,opts)=>{
+    if(path==='/connections' && ++reads===2) return new Promise((resolve,reject)=>{rejectCheck=reject})
+    return b.rest(path,opts)
+  }
+  render(React.createElement(plugin.SettingsForm,{rest}))
+  const selector=await screen.findByLabelText('Connection to configure')
+  fireEvent.change(selector,{target:{value:'xai'}})
+  assert.equal(screen.getByRole('button',{name:'Use this connection'}).disabled,true)
+  fireEvent.change(selector,{target:{value:'custom'}})
+  await React.act(async()=>rejectCheck(new Error('Stale failed check')))
+  assert.equal(screen.queryByText(/Stale failed check/),null)
+  assert.equal(screen.queryByRole('region',{name:'Set up xAI host support'}),null)
+  assert.equal(screen.getByLabelText('Server endpoint').value,b.get().connections.custom.endpoint)
+  assert.equal(b.calls.filter(c=>c.method).length,0)
 })
 
 test('chunk progress and completed boundary review are visible', async () => {

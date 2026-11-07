@@ -673,12 +673,60 @@ export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, dis
     error && h(Callout, { tone: 'error', role: 'alert' }, error))
 }
 
+function XaiSetupGuide() {
+  const commands = `(
+set -e
+# Replace both paths with directories on the Hermes backend machine.
+HERMES_SOURCE='/absolute/path/to/hermes-agent'
+MEETING_PLUGIN='/absolute/path/to/plugins/meeting_notes'
+OAUTH_BACKUP_DIR=$(mktemp -d "\${TMPDIR:-/tmp}/meeting-notes-oauth-backup.XXXXXX")
+cp "$HERMES_SOURCE/hermes_cli/plugin_provider_requests.py" "$OAUTH_BACKUP_DIR/plugin_provider_requests.py"
+printf 'Keep this backup for rollback: %s\\n' "$OAUTH_BACKUP_DIR"
+python3 "$MEETING_PLUGIN/deploy/hermes-test/install-provider-requests.py" "$HERMES_SOURCE" "$MEETING_PLUGIN/deploy/hermes-test/provider-requests.patch"
+)`
+  return h('section', { className: 'mn-card', 'aria-label': 'Set up xAI host support' },
+    h('h3', null, 'Set up xAI host support'),
+    h('p', null, 'An xAI sign-in and a GitHub plugin install do not add the required host API. This is a separate, experimental Hermes source patch. This page checks support; it does not apply the patch or access your credentials.'),
+    h('ol', null,
+      h('li', null, h('strong', null, 'Find the backend. '), 'For Webapp, use a terminal on its server, not your browser’s computer. For Desktop, use the machine running the selected connection. Identify its Hermes source checkout and the installed Meeting Notes directory. The patch affects every profile using that checkout.'),
+      h('li', null, h('strong', null, 'Prepare the host. '), 'Wait for chats, transcriptions and storage jobs to finish. Back up the profile database and all audio folders together. For Docker, apply the extension while building the image using the linked instructions. If a packaged host has no editable source checkout, ask its administrator for an extended build.'),
+      h('li', null, h('strong', null, 'Apply the checked patch to a source installation. '), 'Replace both paths below, then run the commands on the backend. Keep the printed module-backup location. The installer checks the exact reviewed module and patch compatibility. If it refuses a changed or already-patched module, stop; do not bypass the check.',
+        h('textarea', { className: 'mn-input', 'aria-label': 'Host patch commands', readOnly: true, rows: 12, value: commands, spellCheck: false })),
+      h('li', null, h('strong', null, 'Restart and check again. '), 'Restart that backend and its profile plugin-host processes, then return here and choose Check host support again. Refreshing the page alone does not reload Python; closing Desktop may leave its backend running. If support is still missing, confirm the restarted backend uses the patched checkout.'),
+      h('li', null, h('strong', null, 'Connect xAI. '), 'Once host support is detected, sign in through Hermes in the importing profile, save any settings changes, then choose Use this connection. This check does not verify login, subscription entitlement or billing. Your Custom connection is kept.')),
+    h('p', { className: 'mn-muted' }, 'To roll back, wait for work to stop, restore the backed-up module and restart the backend. Use Custom while xAI support is unavailable. Recheck host compatibility after Hermes updates.'),
+    h('a', { href: 'https://github.com/angel12/hermes-meeting-notes/blob/main/deploy/hermes-test/README.md#source-host-setup', target: '_blank', rel: 'noopener noreferrer' }, 'Host setup and Docker instructions'))
+}
+
 export function SettingsForm({ rest }) {
   const [settings, setSettings] = useState(null)
   const [connections, setConnections] = useState(null), [editing, setEditing] = useState('custom')
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
   const [saving, setSaving] = useState(false)
+  const [checkingHost, setCheckingHost] = useState(false), [hostCheckError, setHostCheckError] = useState('')
+  const hostCheck = useRef(0)
+  const checkHost = useCallback(async () => {
+    const request = ++hostCheck.current
+    setCheckingHost(true); setHostCheckError('')
+    try {
+      const v = await rest('/connections')
+      if (request === hostCheck.current) {
+        // A support check must not discard a draft or adopt a newer settings
+        // revision. Concurrent settings edits still use the normal save fence.
+        setConnections(current => current && { ...current, availability: v.availability })
+      }
+    } catch (e) {
+      if (request === hostCheck.current) {
+        setHostCheckError(`Could not check host support: ${errorText(e)}`)
+        setConnections(current => current && { ...current, availability: { ...current.availability, xai: { available: false } } })
+      }
+    } finally { if (request === hostCheck.current) setCheckingHost(false) }
+  }, [rest])
+  useEffect(() => {
+    if (editing === 'xai') checkHost()
+    return () => { ++hostCheck.current }
+  }, [editing, checkHost])
   useEffect(() => { let live = true
     rest('/connections').then(v => { if (live) { setConnections(v); setEditing(v.active); setSettings(v.connections[v.active]) } }).catch(e => { if (live) setError(errorText(e)) })
     return () => { live = false }
@@ -716,9 +764,15 @@ export function SettingsForm({ rest }) {
       h(Field, { label: 'Connection to configure', hint: 'Choose a saved connection. Save changes before leaving this form; selecting a form does not change the active provider.' },
         h('select', { className: 'mn-input', value: editing, disabled: saving, onChange: e => {
           const name = e.target.value
-          setEditing(name); setSettings(connections.connections[name]); setSaved(''); setError('')
+          setEditing(name); setSettings(connections.connections[name]); setSaved(''); setError(''); setCheckingHost(name === 'xai'); setHostCheckError('')
         } }, h('option', { value: 'custom' }, 'Custom · NeMo-Speech.cpp'), h('option', { value: 'xai' }, 'xAI · existing Hermes OAuth (optional)'))),
-      editing === 'xai' && h(Callout, { tone: 'info' }, `${connections.availability?.xai?.message || 'Host support is unavailable.'} Sign in to xAI through Hermes on the importing backend profile. Audio is sent to xAI; subscription coverage is not guaranteed. No API-key fallback is used. Your custom connection is kept.`),
+      editing === 'xai' && h(Fragment, null,
+        h(Callout, { tone: 'info' },
+          h('p', { role: 'status' }, checkingHost ? 'Checking xAI host support…' : hostCheckError ? 'Host support could not be verified.' : connections.availability?.xai?.available === true ? 'xAI host support detected. This does not check your login or STT entitlement.' : 'xAI host extension required. Follow the setup steps below to enable this connection.'),
+          h('p', null, 'Sign in to xAI through Hermes on the importing backend profile. Audio is sent to xAI; subscription coverage is not guaranteed. No API-key fallback is used. Your Custom connection is kept.'),
+          btn({ disabled: saving || checkingHost, onClick: checkHost }, 'Check host support again')),
+        hostCheckError && h(Callout, { tone: 'error', role: 'alert' }, hostCheckError),
+        !checkingHost && connections.availability?.xai?.available !== true && h(XaiSetupGuide)),
       h(Field, { label: 'Server endpoint', hint: 'HTTP(S) base URL, without credentials. Use plain HTTP only on a trusted network.' },
         h('input', { className: 'mn-input', type: 'url', value: settings.endpoint, onChange: set('endpoint'), required: true, disabled: saving || editing === 'xai' })),
       h('div', { className: 'mn-grid2' },
@@ -730,7 +784,7 @@ export function SettingsForm({ rest }) {
             onChange: e => { setSaved(''); setSettings({ ...settings, max_audio_seconds: Math.round(Number(e.target.value) * 60) }) }, required: true, disabled: saving }))),
       h('p', { className: 'mn-muted' }, 'Long recordings are cut at time boundaries, transcribed sequentially, and assembled into one meeting. Review speech near cut points and merge matching speakers across chunks. The original recording stays intact.'),
       h('div', { className: 'mn-row' }, h(Button, { type: 'submit', size: 'sm', disabled: saving }, saving ? 'Saving…' : 'Save settings'),
-        connections.active !== editing && btn({ disabled: saving || dirty || connections.availability?.[editing]?.available !== true, onClick: activate }, 'Use this connection')),
+        connections.active !== editing && btn({ disabled: saving || dirty || (editing === 'xai' && checkingHost) || connections.availability?.[editing]?.available !== true, onClick: activate }, 'Use this connection')),
       dirty && h('p', { className: 'mn-faint' }, 'Save changes before switching the active connection.'),
       h('p', { role: 'status', 'aria-live': 'polite', className: 'mn-muted' }, saved)),
     error && h(Callout, { tone: 'error', role: 'alert' }, error),
