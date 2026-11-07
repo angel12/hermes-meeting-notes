@@ -22,6 +22,20 @@ Early implementation of an import → diarized transcript → corrected speakers
 
 **Not release-ready.** Authenticated Webapp passes the synthetic upload/transcription/playback smoke test on the remote Compose host; native Desktop source-build acceptance now covers installation/toggle, upload, transcription, playback, speaker rename, result routes, interruption recovery and reviewed deletion with synthetic data. Packaged-release and additional-profile acceptance remain open. Shared UI polish, combining recordings and profile selection are deployed to the test Webapp and need visual/user acceptance. Action handoffs are implemented and covered by synthetic tests; live calendar/to-do acceptance remains open and requires the selected profile’s connected tools. Expired-upload cleanup and explicit local response recovery passed installed-runtime synthetic acceptance. No external task system is simulated, and no direct Todoist integration is planned.
 
+## Install from GitHub
+
+Install into the Hermes profile that will import recordings:
+
+```sh
+hermes plugins install https://github.com/angel12/hermes-meeting-notes --yes-deps --enable
+```
+
+For a named profile, put `-p PROFILE` before `plugins`. Select that same profile in Desktop, then enable Meeting Notes under **Capabilities → Plugins**. The shared UI can be visible while a different profile is selected; a `404: Plugin not found` means the selected backend has not loaded the plugin. The Webapp needs the plugin installed on its serving host. If Meeting Notes is already installed, use `hermes plugins update meeting_notes` in the intended profile instead of installing it again. Reload the backend after Python plugin changes.
+
+Install `ffmpeg` and `ffprobe` on that backend machine, then configure a reachable Custom/NeMo-Speech.cpp connection and its Hermes secret as described below.
+
+**Optional xAI needs an additional host setup step.** Installing or updating this GitHub plugin does not install the experimental OAuth multipart extension into Hermes. The extension files are included in the repository, but the plugin installer does not apply them. An existing xAI sign-in alone is insufficient: **Use this connection** stays disabled until the backend exposes the required API. See [Optional xAI transcription](#optional-xai-transcription) and the [explicit host-extension setup](deploy/hermes-test/README.md#source-host-setup). Custom works without this extension. A standard plugin-only install can offer xAI once equivalent support ships in Hermes itself; this repository does not silently modify the host during installation or plugin loading.
+
 ## Development
 
 Python 3.11+ and host `ffmpeg`/`ffprobe` are required. Optional archives require FLAC and libopus encoder support. No binaries are bundled.

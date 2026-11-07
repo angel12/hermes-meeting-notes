@@ -63,6 +63,25 @@ Rebuild/redeploy from this directory with `docker compose up -d --build webapp`.
 Validated by reproducing the original Capabilities crash with both native idle APIs removed, then remounting Capabilities with the served fallback: Skills and Plugins navigation rendered without the workspace error. This simulates the missing-API condition; it is not a native Safari test. Refresh the whole page to load the fix (the error boundary's Retry alone does not reload the renderer entry).
 
 
+### Source-host setup
+
+The GitHub plugin installation includes these extension files but does **not** run the installer. Applying it is a separate, experimental change to the Hermes source used by the backend. It affects every profile served by that source checkout. Packaged Desktop builds may use a different backend; patching an unrelated checkout will not enable their xAI connection.
+
+For a source installation, identify that backend's checkout and wait until its chats, transcription and storage work are idle. Back up the profile database/audio together and preserve the original host module. From the Meeting Notes repository, replace the example path below with the actual Hermes source checkout:
+
+```sh
+HERMES_SOURCE=/absolute/path/to/hermes-agent
+OAUTH_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/meeting-notes-oauth-backup.XXXXXX")
+cp "$HERMES_SOURCE/hermes_cli/plugin_provider_requests.py" "$OAUTH_BACKUP_DIR/plugin_provider_requests.py"
+python3 deploy/hermes-test/install-provider-requests.py "$HERMES_SOURCE" deploy/hermes-test/provider-requests.patch
+```
+
+Keep the backup directory for rollback. The installer requires the exact reviewed module hash and a clean patch check; if it reports that the API changed, stop and review compatibility rather than bypassing the check. It also refuses an already-patched module. It does not read credentials or send audio.
+
+Restart the backend process using that checkout, including any profile plugin-host processes, then reopen Meeting Notes. A page refresh alone does not reload Python, and closing Desktop can leave its backend running. The missing-extension notice should disappear. Sign in to xAI in the importing profile, save the connection, and select **Use this connection**. Availability of the button verifies host API support, not the account's STT entitlement.
+
+For rollback, stop work on that backend, restore the backed-up module and restart the backend again. Custom remains available; do not retry xAI plans on an unextended host. Hermes updates can replace or conflict with the extension, so recheck compatibility after an update. Do not add this installer to plugin startup or installation hooks; an upstream host API is the path to ordinary plugin-only installation.
+
 ## Optional separate audio volume
 
 The storage setting is a path inside the container. Compose includes `./audio:/opt/audio` beside the existing data volume. Make the host audio directory writable by UID/GID 1000, recreate the test service after checking for active work, then enter `/opt/audio` in Audio storage. The plugin creates its own profile-specific managed child directory. Merely saving that setting does not move existing recordings; use their reviewed storage action. Preserve both the profile data volume and audio volume in backups. Do not point the plugin at a browser-local path or mount a user's unrelated recordings wholesale.
