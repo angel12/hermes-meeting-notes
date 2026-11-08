@@ -20,7 +20,8 @@ def _sources(svc, meeting):
             db.execute('BEGIN IMMEDIATE')
             parts = snapshot['recordings'] or [{'meeting_id': meeting}]
             for part in parts:
-                path = storage.playback_path(svc, db, part['meeting_id'])
+                owned = db.execute('SELECT playback FROM composition_audio WHERE meeting=? AND part=?', (meeting, part.get('part'))).fetchone()
+                path = storage.check_audio_path(svc, owned[0]) if owned else storage.playback_path(svc, db, part['meeting_id'])
                 file = stack.enter_context(path.open('rb'))
                 asset = db.execute('SELECT frames FROM audio_assets WHERE meeting=?', (part['meeting_id'],)).fetchone()
                 frames = part.get('frames', asset[0] if asset else None)

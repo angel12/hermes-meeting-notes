@@ -73,3 +73,15 @@ def test_waveform_capacity_fails_fast_and_recovers(recordings):
     with _SCAN_SLOTS, _SCAN_SLOTS:
         with pytest.raises(ValueError, match='busy'): waveform(svc,ids[0])
     assert waveform(svc,ids[0])['duration'] == 4
+
+
+def test_owned_combination_waveform_survives_source_deletion(recordings):
+    from meeting_notes import storage, deletion
+    svc, ids = recordings
+    mid = svc.combine(**{**body(svc, ids), 'own_audio': True})['id']
+    before = waveform(svc, mid)
+    assert storage.run_once(svc)
+    for original in ids:
+        deletion.remove(svc, original, deletion.review(svc, original)['token'], True)
+    assert timeline(svc,mid)['duration'] == 8
+    assert waveform(svc,mid) == before
