@@ -853,6 +853,8 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
   const audio = useRef(null), generation = useRef(0), url = useRef(null)
   const offset = useRef(0), length = useRef(0), next = useRef(null), desired = useRef(false)
   const total = useRef(0), speed = useRef(1)
+  const scrubTimer = useRef(null), scrubTarget = useRef(null), handledSeek = useRef(null)
+  const wavePath = useMemo(() => peaks.map((p,i) => `M${i*1200/peaks.length},${40-p*38}v${p*76}`).join(' '), [peaks])
   const fetchWindow = start => rest(`/meetings/${meetingId}/audio?start=${start}&duration=30`, { timeoutMs: 120000 })
   const stop = () => { desired.current = false; audio.current?.pause(); setRunning(false) }
   const load = async (start, autoplay) => {
@@ -888,7 +890,12 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
       }
     } catch (e) {
       if (generation.current !== seq) return
-      stop(); setLoading(false); setError(`Playback unavailable: ${errorText(e)}`)
+      stop(); setLoading(false)
+      if (url.current) URL.revokeObjectURL(url.current)
+      url.current = null
+      audio.current?.removeAttribute('src')
+      setPosition(start); onPosition(start)
+      setError(`Playback unavailable: ${errorText(e)}`)
     }
   }
   useEffect(() => {
@@ -902,19 +909,36 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
     rest(`/meetings/${meetingId}/waveform`, {timeoutMs:120000}).then(data => {
       if(live) setPeaks(data.peaks || [])
     }).catch(() => { if(live) setWaveError('Waveform unavailable. Playback and seeking remain available.') })
-    return () => { live=false; generation.current++; desired.current=false; element?.pause(); if(url.current) URL.revokeObjectURL(url.current); url.current=null }
+    return () => { clearTimeout(scrubTimer.current); live=false; generation.current++; desired.current=false; element?.pause(); if(url.current) URL.revokeObjectURL(url.current); url.current=null }
   }, [meetingId, rest])
   useEffect(() => { if(suspended) stop() }, [suspended])
-  useEffect(() => { if(seekRequest && timeline) load(seekRequest.start, true) }, [seekRequest, timeline])
+  useEffect(() => {
+    if(seekRequest && timeline && handledSeek.current !== seekRequest) {
+      handledSeek.current = seekRequest
+      clearTimeout(scrubTimer.current); scrubTarget.current=null
+      load(seekRequest.start, true)
+    }
+  }, [seekRequest, timeline])
   const toggle = async () => {
     if(loading) { generation.current++; setLoading(false); stop(); return }
     if(desired.current) { stop(); return }
     if(!url.current || position >= total.current) { load(position >= total.current ? 0 : position, true); return }
     desired.current=true
     onStart?.()
-    try { await audio.current.play() } catch { stop(); setError('Audio could not start. Seek to retry.') }
+    const seq = generation.current
+    try { await audio.current.play() } catch { if(generation.current === seq) { stop(); setError('Audio could not start. Seek to retry.') } }
   }
-  const seek = value => load(Number(value), desired.current)
+  const commitSeek = () => {
+    clearTimeout(scrubTimer.current)
+    const value = scrubTarget.current
+    scrubTarget.current = null
+    if(value !== null) load(value, desired.current)
+  }
+  const seek = value => {
+    scrubTarget.current = Number(value); setPosition(Number(value))
+    clearTimeout(scrubTimer.current)
+    scrubTimer.current = setTimeout(commitSeek, 250)
+  }
   return h('section', {className:'mn-meeting-player mn-card', 'aria-label':'Meeting audio player'},
     h('div', {className:'mn-wave', onClick:e => {
       if(!timeline) return
@@ -923,15 +947,15 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
     }, 'aria-hidden':true},
       h('svg', {viewBox:'0 0 1200 80', preserveAspectRatio:'none'},
         h('line',{x1:0,x2:1200,y1:40,y2:40,stroke:'currentColor',strokeWidth:.5}),
-        ...peaks.map((p,i) => h('line', {key:i,x1:i*1200/peaks.length,x2:i*1200/peaks.length,y1:40-p*38,y2:40+p*38,stroke:'currentColor',strokeWidth:Math.max(1,1200/peaks.length*.7)})),
+        h('path',{d:wavePath,stroke:'currentColor',fill:'none',strokeWidth:Math.max(1,1200/Math.max(1,peaks.length)*.7)}),
         h('line',{x1:timeline?position/timeline.duration*1200:0,x2:timeline?position/timeline.duration*1200:0,y1:0,y2:80,stroke:'var(--ui-accent)',strokeWidth:3}))),
     h('div',{className:'mn-player-controls'},
       btn({onClick:toggle,disabled:!timeline,'aria-label':loading?'Cancel audio loading':running?'Pause meeting audio':'Play meeting audio'},loading?'Cancel buffering':running?'Pause':'Play'),
       h('span',{className:'mn-nowrap'},`${clock(position)} / ${timeline?clock(timeline.duration):'…'}`),
-      h('input',{type:'range',min:0,max:timeline?.duration || 1,step:.1,value:position,disabled:!timeline,'aria-label':'Seek meeting audio',onChange:e=>seek(e.target.value)}),
+      h('input',{type:'range',min:0,max:timeline?.duration || 1,step:.1,value:position,disabled:!timeline,'aria-label':'Seek meeting audio',onChange:e=>seek(e.target.value),onPointerUp:commitSeek,onKeyUp:commitSeek,onBlur:commitSeek}),
       h('select',{'aria-label':'Playback speed',value:rate,onChange:e=>{const v=Number(e.target.value);speed.current=v;setRate(v);if(audio.current)audio.current.playbackRate=v}},...[.75,1,1.25,1.5,2].map(v=>h('option',{key:v,value:v},`${v}×`)))),
     h('audio',{ref:audio,preload:'auto','aria-label':'Full meeting audio',onPlay:()=>setRunning(true),onPause:()=>setRunning(false),
-      onTimeUpdate:()=>{const time=Math.min(total.current,offset.current+(audio.current?.currentTime || 0));setPosition(time);onPosition(time)},
+      onTimeUpdate:()=>{if(scrubTarget.current !== null)return;const time=Math.min(total.current,offset.current+(audio.current?.currentTime || 0));setPosition(time);onPosition(time)},
       onEnded:()=>{const end=offset.current+length.current;if(end<total.current && desired.current)load(end,true);else{stop();setPosition(total.current);onPosition(total.current)}},
       onError:()=>{stop();setError('Audio could not be decoded. Seek to retry.')}}),
     error && h('p',{role:'alert'},error), waveError && h('p',{className:'mn-faint'},waveError))
@@ -1072,7 +1096,7 @@ function SpeakerRow({ person, participants, total, busy, play, correct, onJump }
           : h('button', { type: 'button', className: 'mn-name-btn', disabled: busy, onClick: () => { setName(person.name || ''); setMode('rename') }, 'aria-label': `Rename ${label}` }, label),
         h('span', { className: 'mn-faint' }, `${spokenDuration(person.seconds)} · ${share}% · ${person.segments} ${person.segments === 1 ? 'turn' : 'turns'}${person.name ? ` · label ${person.id}` : ''}`)),
       h('div', { className: 'mn-spk-tools' },
-        btn({ variant: 'ghost', size: 'xs', onClick: () => play(person.first), 'aria-label': `Play a sample of ${label}` }, '▶'),
+        btn({ variant: 'ghost', size: 'xs', onClick: () => play(person.first), 'aria-label': `Play from first turn of ${label}` }, '▶'),
         btn({ variant: 'ghost', size: 'xs', onClick: () => onJump(person.id), 'aria-label': `Next turn by ${label}` }, 'Next'),
         person.mergeable && person.mergeSegments > 0 && others.length > 0 && btn({ variant: 'ghost', size: 'xs', disabled: busy, 'aria-expanded': mode === 'merge', onClick: () => setMode(mode === 'merge' ? null : 'merge'), 'aria-label': `Merge ${label} into another speaker` }, 'Merge…'))),
     mode === 'merge' && h('form', { className: 'mn-merge', onSubmit: async e => { e.preventDefault(); if (into && await correct([['merge', person.id, into]])) setMode(null) } },
@@ -1109,13 +1133,12 @@ function SpeakersPanel({ meeting, participants, busy, play, correct, onJump, onC
           : btn({ size: 'xs', variant: 'ghost', disabled: busy, onClick: () => correct([['undo', '', c.id]]), 'aria-label': `Undo: ${describeCorrection(c, meeting.segments, nameOf)}` }, 'Undo')))))
 }
 
-function TranscriptPanel({ meeting, participants, cursor, playing, focusId, setFocusId, busy, play, correct }) {
+function TranscriptPanel({ meeting, participants, cursor, activeId, playing, focusId, setFocusId, busy, play, correct }) {
   const [query, setQuery] = useState('')
   const [speaker, setSpeaker] = useState('')
   const [editing, setEditing] = useState(null) // 'text:<id>' | 'speaker:<id>'
   const [drawer, setDrawer] = useState(false)
   const [follow, setFollow] = useState(true)
-  const activeId = meeting.segments.find(s => cursor >= s.start && cursor < s.end)?.id
   const listRef = useRef(null)
   const corrected = useMemo(() => {
     const map = {}
@@ -1136,7 +1159,7 @@ function TranscriptPanel({ meeting, participants, cursor, playing, focusId, setF
     if (pane && row) pane.scrollTo?.({top: pane.scrollTop + row.getBoundingClientRect().top - pane.getBoundingClientRect().top - pane.clientHeight/3, behavior:'smooth'})
   }, [activeId, follow, editing, query, speaker])
   const jump = participant => {
-    const after = focusId ? (meeting.segments.find(s => s.id === focusId.id)?.start ?? -1) : (playing ? playing.start : -1)
+    const after = Math.max(cursor.current, focusId ? (meeting.segments.find(s => s.id === focusId.id)?.start ?? -1) : -1)
     const next = nextTurnOf(meeting.segments, participant, after)
     if (next) { setFocusId({ id: next.id, at: Date.now() }); setDrawer(false) }
   }
@@ -1475,7 +1498,12 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
 function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab, onDeleted, onDeleteBusy }) {
   const participants = useMemo(() => participantsOf(meeting.segments, meeting.corrections), [meeting.segments, meeting.corrections])
   const [focusId, setFocusId] = useState(null)
-  const [cursor, setCursor] = useState(-1)
+  const cursor = useRef(-1)
+  const [activeId, setActiveId] = useState(null)
+  const setCursor = useCallback(time => {
+    cursor.current = time
+    setActiveId(meeting.segments.find(s => time >= s.start && time < s.end)?.id ?? null)
+  }, [meeting.segments])
   const [seekRequest, setSeekRequest] = useState(null)
   const duration = meeting.segments.length ? Math.max(...meeting.segments.map(s => s.end || 0)) : 0
   const ready = Boolean(meeting.active)
@@ -1523,7 +1551,7 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
       : h(Fragment, null,
         h(Tabs, { tabs, value: tab, onChange: setTab, label: 'Meeting sections' }),
         h('div', { role: 'tabpanel', id: `mn-panel-${tab}`, 'aria-labelledby': `mn-tab-${tab}`, tabIndex: -1 },
-          tab === 'transcript' && h(TranscriptPanel, { meeting, participants, cursor, playing, focusId, setFocusId, busy, play:segment=>{closePlayer();setSeekRequest({start:segment.start,at:Date.now()})}, correct }),
+          tab === 'transcript' && h(TranscriptPanel, { meeting, participants, cursor, activeId, playing, focusId, setFocusId, busy, play:segment=>{closePlayer();setSeekRequest({start:segment.start,at:Date.now()})}, correct }),
           tab === 'notes' && h(NotesPanel, { meeting, participants, rest, play, showSegment }),
           tab === 'actions' && h(ActionItemsPanel, { meeting, participants, rest, play, showSegment }))))
 }

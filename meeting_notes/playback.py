@@ -8,9 +8,11 @@ import threading
 import wave
 from . import storage, audio
 
+_SCAN_SLOTS = threading.BoundedSemaphore(2)
+
 
 @contextmanager
-def sources(svc, meeting):
+def _sources(svc, meeting):
     snapshot = svc.get(meeting)
     with ExitStack() as stack:
         opened = []
@@ -26,6 +28,15 @@ def sources(svc, meeting):
                     frames = audio.pcm_info(path)
                 opened.append((file, path.suffix, frames))
         yield opened
+
+
+@contextmanager
+def sources(svc, meeting):
+    try:
+        with _sources(svc, meeting) as files:
+            yield files
+    except (OSError, wave.Error, EOFError):
+        raise ValueError('A source recording is unavailable') from None
 
 
 def timeline(svc, meeting):
@@ -58,7 +69,7 @@ def pcm_stream(file, codec):
             process.stdout.close()
 
 
-def waveform(svc, meeting):
+def _waveform(svc, meeting):
     with sources(svc, meeting) as files:
         frames = sum(f[2] for f in files)
         width = max(1, math.ceil(frames/1200))
@@ -79,3 +90,13 @@ def waveform(svc, meeting):
                         peaks.append(round(peak/32768, 4)); peak, used = 0, 0
         if used: peaks.append(round(peak/32768, 4))
         return {'duration': frames/16000, 'peaks': peaks}
+
+
+def waveform(svc, meeting):
+    # Fail fast instead of queueing uncancellable scans from abandoned views.
+    if not _SCAN_SLOTS.acquire(blocking=False):
+        raise ValueError('Waveform service is busy; reopen the meeting to try again')
+    try:
+        return _waveform(svc, meeting)
+    finally:
+        _SCAN_SLOTS.release()

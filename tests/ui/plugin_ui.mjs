@@ -147,6 +147,37 @@ test('full meeting player continues across windows, seeks globally and preserves
   assert.ok(screen.getByRole('button',{name:'Play meeting audio'}))
 })
 
+test('seek scrubbing coalesces requests and failed transitions retry at the boundary', async () => {
+  const calls=[],positions=[]
+  let fail=true
+  const rest=async p=>{
+    calls.push(p)
+    if(p.endsWith('/playback')) return {duration:65}
+    if(p.endsWith('/waveform')) return {peaks:[.5]}
+    if(p.includes('start=30&') && fail) throw new Error('synthetic offline')
+    return {mime:'audio/wav',base64:Buffer.from('synthetic').toString('base64')}
+  }
+  render(React.createElement(plugin.MeetingPlayer,{meetingId:'m',rest,onPosition:p=>positions.push(p)}))
+  await waitFor(()=>assert.equal(screen.getByLabelText('Seek meeting audio').disabled,false))
+  const slider=screen.getByLabelText('Seek meeting audio')
+  for(const value of [10,20,25,0])fireEvent.change(slider,{target:{value:String(value)}})
+  assert.equal(calls.filter(p=>p.includes('/audio?')).length,0)
+  fireEvent.pointerUp(slider)
+  await waitFor(()=>assert.ok(positions.includes(0)))
+  assert.equal(calls.filter(p=>p.includes('start=0&')).length,1)
+  fireEvent.click(screen.getByRole('button',{name:'Play meeting audio'}))
+  await screen.findByRole('button',{name:'Pause meeting audio'})
+  fireEvent.ended(screen.getByLabelText('Full meeting audio'))
+  await screen.findByRole('alert')
+  assert.equal(positions.at(-1),30)
+  assert.equal(screen.getByLabelText('Full meeting audio').getAttribute('src'),null)
+  fail=false
+  fireEvent.click(screen.getByRole('button',{name:'Play meeting audio'}))
+  await screen.findByRole('button',{name:'Pause meeting audio'})
+  assert.equal(calls.filter(p=>p.includes('start=0&')).length,1)
+  assert.equal(calls.filter(p=>p.includes('start=30&')).length,2)
+})
+
 test('pure helpers: offset dates, upload preflight, correction state', () => {
   assert.match(plugin.withOffset('2026-11-05T16:00'), /^2026-11-05T16:00:00[+-]\d{2}:\d{2}$/)
   assert.equal(plugin.withOffset('2026-02-30T10:00'), null)

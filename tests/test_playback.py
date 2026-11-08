@@ -55,3 +55,21 @@ def test_flac_waveform_matches_pcm_and_rejects_truncation(recordings, monkeypatc
     assert waveform(svc,ids[0]) == expected
     target.write_bytes(b'invalid synthetic archive')
     with pytest.raises(ValueError): waveform(svc,ids[0])
+
+
+def test_missing_and_corrupt_wav_are_reported_as_unavailable(recordings):
+    from meeting_notes import storage
+    svc, ids = recordings
+    with svc.db() as db: path = storage.playback_path(svc, db, ids[0])
+    path.write_bytes(b'broken wav')
+    with pytest.raises(ValueError, match='unavailable'): waveform(svc,ids[0])
+    path.unlink()
+    with pytest.raises(ValueError): timeline(svc,ids[0])
+
+
+def test_waveform_capacity_fails_fast_and_recovers(recordings):
+    from meeting_notes.playback import _SCAN_SLOTS
+    svc, ids = recordings
+    with _SCAN_SLOTS, _SCAN_SLOTS:
+        with pytest.raises(ValueError, match='busy'): waveform(svc,ids[0])
+    assert waveform(svc,ids[0])['duration'] == 4
