@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import threading
 import time
 
@@ -308,6 +309,20 @@ def cleanup(svc):
         cleanup_folders(svc, db)
 
 
+def _heartbeat(svc, job, owner, stop):
+    while not stop.wait(10):
+        try:
+            with svc.db() as db:
+                updated = db.execute("UPDATE storage_jobs SET lease=? WHERE id=? AND owner=? AND state='running' AND lease>=?",
+                                     (time.time()+LEASE, job['id'], owner, time.time()))
+                if not updated.rowcount:
+                    return  # Never revive an expired or reassigned lease.
+        except sqlite3.OperationalError:
+            continue  # A transient busy database need not permanently stop renewal.
+        except Exception:
+            return
+
+
 def run_once(svc):
     cleanup(svc)
     owner = uid()
@@ -338,20 +353,12 @@ def run_once(svc):
     def fenced(db):
         return db.execute("SELECT 1 FROM storage_jobs WHERE id=? AND owner=? AND state='running' AND lease>=?", (job['id'], owner, time.time())).fetchone()
     stop = threading.Event()
-    def beat():
-        while not stop.wait(10):
-            try:
-                with svc.db() as db:
-                    db.execute("UPDATE storage_jobs SET lease=? WHERE id=? AND owner=? AND state='running' AND lease>=?", (time.time()+LEASE, job['id'], owner, time.time()))
-            except Exception:
-                return  # Fence closes if the heartbeat cannot be maintained.
-    thread = threading.Thread(target=beat, daemon=True); thread.start()
+    thread = threading.Thread(target=_heartbeat, args=(svc, job, owner, stop), daemon=True); thread.start()
     outputs, committed = [], False
     try:
         if is_composition:
             from .composition_storage import run
-            run(svc, job, owner, fenced)
-            committed = True
+            committed = run(svc, job, owner, fenced, outputs)
             return True
         value = json.loads(job['settings']); root = check_root(svc, value['managed_path'])
         check_audio_path(svc, source)
@@ -425,8 +432,19 @@ def run_once(svc):
                 for path in outputs:
                     used = audio_referenced(db, path)
                     if not used:
-                        try: path.unlink(missing_ok=True)
-                        except OSError: pass
+                        try:
+                            check_audio_path(svc, path, allow_missing=True)
+                            path.unlink(missing_ok=True)
+                        except (OSError, ValueError):
+                            pass
+                # Retain local knowledge even if a concurrent cleanup reclaimed
+                # this worker's allocation rows after its lease expired.
+                for folder in {p.parent for p in outputs if p.parent.name.startswith('recordings-')}:
+                    try:
+                        check_audio_path(svc, folder/'probe', allow_missing=True)
+                        folder.rmdir()
+                    except (OSError, ValueError):
+                        pass
         try:
             cleanup(svc)
         except (OSError, ValueError):

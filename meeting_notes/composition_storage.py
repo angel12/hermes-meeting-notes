@@ -10,8 +10,8 @@ from .store import uid
 
 
 def enqueue(svc, meeting, expected_settings=None, db=None):
-    from .deletion import _local
-    _local(svc)
+    if getattr(svc, 'analysis_actor', None) is not None or getattr(svc, 'handoff_actor', None) is not None:
+        raise ValueError('Move audio from the importing profile UI')
     if db is None:
         with svc.db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -48,7 +48,7 @@ def snapshot(db, meeting):
     return result
 
 
-def run(svc, job, owner, fenced):
+def run(svc, job, owner, fenced, outputs):
     """The caller owns the job lease and heartbeat. No bulk I/O holds a DB lock."""
     root = storage.check_root(svc, json.loads(job['settings'])['managed_path'])
     folder = root/'audio'/('recordings-'+uid())
@@ -56,7 +56,7 @@ def run(svc, job, owner, fenced):
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         if not fenced(db):
-            return
+            return False
         basis = snapshot(db, job['meeting'])
         plans = []
         for item in basis:
@@ -74,13 +74,23 @@ def run(svc, job, owner, fenced):
             recording = folder/f"{part['part']:02d}-{base}"
             prepared = folder/f"{part['part']:02d}-playback{playback.suffix}"
             plans.append((item, original, playback, recording, prepared, checks))
+        outputs.extend(path for plan in plans for path in plan[3:5])
         # These allocations commit before any directory creation or file copying.
         db.execute('INSERT INTO audio_folders VALUES(?)', (str(folder),))
         db.executemany('INSERT INTO storage_outputs VALUES(?,?,?)',
                        ((job['id'], owner, str(path)) for plan in plans for path in plan[3:5]))
-    folder.mkdir(mode=0o700)
+    # Registration is already durable. Serialize creation with cleanup, and
+    # recheck the lease after any pause between registration and creation.
+    with svc.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if not fenced(db):
+            return False
+        folder.mkdir(mode=0o700)
     cleanup, results, signatures = [], [], {}
     for item, original, playback, recording, prepared, checks in plans:
+        with svc.db() as db:
+            if not fenced(db):
+                return False
         for path in (original, playback):
             storage.check_audio_path(svc, path)
             signatures[path] = storage.file_signature(path)
@@ -107,7 +117,7 @@ def run(svc, job, owner, fenced):
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         if not fenced(db):
-            return
+            return False
         if snapshot(db, job['meeting']) != basis:
             raise ValueError('Audio references changed while moving')
         # Hashing happened outside the lock. Check that none of those files was
@@ -130,3 +140,4 @@ def run(svc, job, owner, fenced):
                            (part['meeting_id'], str(prepared), checks['frames'], checks['pcm_sha'], checks['archive_mode'], checks['recording_sha']))
         db.execute("UPDATE storage_jobs SET state='completed',lease=NULL,result=?,cleanup=? WHERE id=?",
                    (json.dumps({'directory': str(folder)}), json.dumps(cleanup), job['id']))
+    return True

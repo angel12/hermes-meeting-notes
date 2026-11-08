@@ -445,3 +445,43 @@ def test_cleanup_hashing_does_not_block_writer_and_rechecks_changes(recordings, 
         cleaning.result(timeout=10)
     assert paths[0].read_bytes() == b'changed externally'
     assert storage.status(svc, mid)['job']['cleanup_pending']
+
+
+def test_lease_expiry_between_registration_and_creation_leaves_no_orphans(recordings, monkeypatch):
+    from contextlib import contextmanager
+    svc, ids = recordings
+    mid = svc.combine(**{**body(svc, ids), 'own_audio': True})['id']
+    original_files = set((svc.root/'audio').iterdir())
+    original_db = svc.db
+    expired = False
+    @contextmanager
+    def pause_after_registration():
+        nonlocal expired
+        with original_db() as db:
+            yield db
+        # The registration transaction committed, but creation has not begun.
+        with original_db() as db:
+            allocated = db.execute('SELECT 1 FROM storage_outputs').fetchone()
+        if allocated and not expired:
+            expired = True
+            with original_db() as db:
+                db.execute('UPDATE storage_jobs SET lease=0 WHERE meeting=?', (mid,))
+            storage.cleanup(svc)
+    monkeypatch.setattr(svc, 'db', pause_after_registration)
+    monkeypatch.setattr(storage, 'copy_verified', lambda *a: pytest.fail('Expired worker copied audio'))
+    assert storage.run_once(svc)
+    assert expired
+    assert storage.status(svc, mid)['job']['state'] == 'failed'
+    assert set((svc.root/'audio').iterdir()) == original_files
+    with original_db() as db:
+        assert not db.execute('SELECT 1 FROM storage_outputs').fetchone()
+        assert not db.execute('SELECT 1 FROM audio_folders').fetchone()
+
+
+def test_audio_move_rejects_scoped_actor_with_correct_message(recordings):
+    from meeting_notes.composition import organize_audio
+    svc, ids = recordings
+    mid = svc.combine(**body(svc, ids))['id']
+    svc.analysis_actor = 'scoped'
+    with pytest.raises(ValueError, match='Move audio from the importing profile UI'):
+        organize_audio(svc, mid)
