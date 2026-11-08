@@ -14,6 +14,8 @@ const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', 
 for (const key of ['window', 'document', 'HTMLElement', 'Element', 'Node', 'Event', 'KeyboardEvent', 'MouseEvent', 'getComputedStyle', 'HTMLInputElement']) {
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true, writable: true })
 }
+dom.window.HTMLMediaElement.prototype.pause = function () { this.dispatchEvent(new dom.window.Event('pause')) }
+dom.window.HTMLMediaElement.prototype.play = async function () { this.dispatchEvent(new dom.window.Event('play')) }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 dom.window.HTMLElement.prototype.scrollIntoView = function () {}
 
@@ -97,6 +99,8 @@ function makeBackend({ withAnalysis = false } = {}) {
       state.corrections = [...state.corrections, { id: `c${state.revision}`, revision: state.revision, transcript: T, kind: b.kind, target: b.target, value: b.value }]
       return meeting()
     }
+    if (p === '/meetings/m1/playback') return {duration:35,window_seconds:30}
+    if (p === '/meetings/m1/waveform') return {duration:35,peaks:[0,.5,1,.5,0]}
     if (p.startsWith('/meetings/m1/audio?')) return { mime: 'audio/wav', base64: Buffer.from('RIFFsynthetic').toString('base64') }
     if (p === '/uploads' && method === 'POST') { state.uploads.u1 = []; return { id: 'u1', chunk_size: 8 } }
     if (p.startsWith('/uploads/u1/chunks/') && method === 'PUT') { state.uploads.u1.push(opts); return { accepted: true } }
@@ -115,6 +119,33 @@ const tests = []
 const test = (name, fn) => tests.push({ name, fn })
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+test('full meeting player continues across windows, seeks globally and preserves speed', async () => {
+  const calls=[], positions=[]
+  const rest=async p=>{
+    calls.push(p)
+    if(p.endsWith('/playback'))return {duration:65}
+    if(p.endsWith('/waveform'))return {duration:65,peaks:[0,.5,1]}
+    return {mime:'audio/wav',base64:Buffer.from('synthetic').toString('base64')}
+  }
+  render(React.createElement(plugin.MeetingPlayer,{meetingId:'m',rest,onPosition:p=>positions.push(p)}))
+  await waitFor(()=>assert.equal(screen.getByRole('button',{name:'Play meeting audio'}).disabled,false))
+  fireEvent.click(screen.getByRole('button',{name:'Play meeting audio'}))
+  await screen.findByRole('button',{name:'Pause meeting audio'})
+  const audio=screen.getByLabelText('Full meeting audio')
+  fireEvent.change(screen.getByLabelText('Playback speed'),{target:{value:'1.5'}})
+  await waitFor(()=>assert.ok(calls.some(p=>p.includes('start=30&'))))
+  fireEvent.ended(audio)
+  await waitFor(()=>assert.ok(positions.includes(30)))
+  assert.equal(audio.playbackRate,1.5)
+  audio.currentTime=2;fireEvent.timeUpdate(audio)
+  assert.equal(positions.at(-1),32)
+  fireEvent.click(screen.getByRole('button',{name:'Pause meeting audio'}))
+  fireEvent.change(screen.getByLabelText('Seek meeting audio'),{target:{value:'61'}})
+  await waitFor(()=>assert.equal(positions.at(-1),61))
+  assert.equal(calls.filter(p=>p.includes('start=30&')).length,1)
+  assert.ok(screen.getByRole('button',{name:'Play meeting audio'}))
+})
 
 test('pure helpers: offset dates, upload preflight, correction state', () => {
   assert.match(plugin.withOffset('2026-11-05T16:00'), /^2026-11-05T16:00:00[+-]\d{2}:\d{2}$/)
@@ -361,6 +392,23 @@ test('late meeting responses cannot replace a newer selection', async () => {
   assert.ok(screen.getByRole('heading', { name: 'Second synthetic meeting' }))
 })
 
+test('transcript follows the playhead inside its own pane and can stop following', async () => {
+  const b=makeBackend()
+  await openMeeting(b)
+  const pane=screen.getByLabelText('Scrollable transcript'), moves=[]
+  pane.scrollTo=options=>moves.push(options)
+  fireEvent.click(screen.getByRole('button',{name:'Play from 0:00, Host'}))
+  await waitFor(()=>assert.ok(moves.length))
+  const audio=screen.getByLabelText('Full meeting audio')
+  audio.currentTime=6;fireEvent.timeUpdate(audio)
+  await waitFor(()=>assert.ok(moves.length>1))
+  assert.equal(document.querySelectorAll('.mn-seg[data-active=true]').length,1)
+  fireEvent.click(screen.getByRole('checkbox',{name:'Follow audio'}))
+  const count=moves.length
+  audio.currentTime=11;fireEvent.timeUpdate(audio)
+  assert.equal(moves.length,count)
+})
+
 test('playback ignores superseded requests and requests resolved after navigation', async () => {
   const b = makeBackend(), original = b.rest, pending = []
   b.rest = async (p, opts) => {
@@ -379,7 +427,7 @@ test('playback ignores superseded requests and requests resolved after navigatio
   assert.equal(document.querySelector('audio').getAttribute('src'), url)
   fireEvent.click(screen.getByRole('button', { name: 'Play from 0:10, Participant 2' }))
   fireEvent.click(screen.getByRole('button', { name: 'New recording' }))
-  await React.act(async () => pending[2].resolve(response))
+  await React.act(async () => pending.at(-1).resolve(response))
   assert.equal(created.length, before + 1)
   assert.ok(revoked.includes(url))
   assert.equal(screen.queryByRole('region', { name: 'Audio playback' }), null)
@@ -1092,11 +1140,12 @@ test('deleting the selected linked meeting clears the workspace, audio, URL and 
   await screen.findByRole('heading', { name: 'Synthetic planning sync' })
   fireEvent.click(screen.getByRole('tab', { name: /^Transcript/ }))
   fireEvent.click(screen.getByRole('button', { name: 'Play from 0:00, Host' }))
-  const player = await screen.findByLabelText('Audio from 0:00')
+  const player = await screen.findByLabelText('Full meeting audio')
+  await waitFor(()=>assert.ok(player.src.startsWith('blob:')))
   const url = player.src
   fireEvent.click(screen.getByRole('button', { name: 'Delete meeting…' }))
   fireEvent.change(await screen.findByLabelText('Type the meeting title to confirm'), { target: { value: 'Synthetic planning sync' } })
-  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(screen.getByRole('checkbox', {name:/permanently deletes/}))
   fireEvent.click(screen.getByRole('button', { name: 'Permanently delete meeting' }))
   await screen.findByRole('heading', { name: 'Start with a recording' })
   assert.equal(screen.queryByRole('heading', { name: 'Synthetic planning sync' }), null)

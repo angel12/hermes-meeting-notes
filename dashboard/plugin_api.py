@@ -271,3 +271,15 @@ def correct(ident: str,body: dict):
 @router.get('/meetings/{ident}/audio')
 def audio(ident: str,start: float=0,duration: float=20):
     return call(lambda:runtime.service().audio_window(ident,start,duration))
+
+
+@router.get('/meetings/{ident}/playback')
+def playback_timeline(ident: str):
+    from meeting_notes.playback import timeline
+    return call(lambda: timeline(runtime.service(), ident))
+
+
+@router.get('/meetings/{ident}/waveform')
+def playback_waveform(ident: str):
+    from meeting_notes.playback import waveform
+    return call(lambda: waveform(runtime.service(), ident))

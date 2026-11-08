@@ -91,7 +91,12 @@ select.mn-input{padding-right:24px}
 .mn-chip[aria-pressed=true]{background:var(--ui-row-active-background,var(--mn-soft))}
 .mn-picker{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:4px;border-radius:6px;background:var(--mn-soft)}
 .mn-inline-edit{display:grid;gap:6px}
-.mn-transcript{list-style:none;margin:0;padding:0}
+.mn-transcript{list-style:none;margin:0;padding:8px;max-height:60vh;min-height:240px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--mn-line);border-radius:8px}
+.mn-meeting-player{position:sticky;top:0;z-index:3;background:var(--ui-bg-elevated,var(--ui-bg-card));padding:12px}
+.mn-wave{height:80px;cursor:crosshair;color:var(--ui-text-secondary)}
+.mn-wave svg{width:100%;height:100%}
+.mn-player-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.mn-player-controls input[type=range]{flex:1;min-width:100px}
 .mn-seg{display:grid;gap:4px;padding:10px 8px;border-radius:6px;scroll-margin-top:64px}
 .mn-seg:hover{background:var(--ui-row-hover-background,transparent)}
 .mn-seg[data-active=true]{background:var(--ui-selection-background,var(--mn-soft))}
@@ -836,6 +841,102 @@ export function SettingsForm({ rest }) {
 
 // ── Meeting workspace ────────────────────────────────────────────────────────
 
+export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspended, onStart }) {
+  const [timeline, setTimeline] = useState(null)
+  const [peaks, setPeaks] = useState([])
+  const [error, setError] = useState('')
+  const [waveError, setWaveError] = useState('')
+  const [position, setPosition] = useState(0)
+  const [running, setRunning] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [rate, setRate] = useState(1)
+  const audio = useRef(null), generation = useRef(0), url = useRef(null)
+  const offset = useRef(0), length = useRef(0), next = useRef(null), desired = useRef(false)
+  const total = useRef(0), speed = useRef(1)
+  const fetchWindow = start => rest(`/meetings/${meetingId}/audio?start=${start}&duration=30`, { timeoutMs: 120000 })
+  const stop = () => { desired.current = false; audio.current?.pause(); setRunning(false) }
+  const load = async (start, autoplay) => {
+    const seq = ++generation.current
+    desired.current = autoplay
+    if (autoplay) onStart?.()
+    audio.current?.pause(); setRunning(false); setLoading(true); setError('')
+    start = Math.max(0, Math.min(start, Math.max(0, total.current - .001)))
+    try {
+      const pending = next.current
+      next.current = null
+      const result = await (pending?.start === start ? pending.promise : fetchWindow(start))
+      if (generation.current !== seq) return
+      const bytes = Uint8Array.from(atob(result.base64), c => c.charCodeAt(0))
+      const newUrl = URL.createObjectURL(new Blob([bytes], { type: result.mime }))
+      if (url.current) URL.revokeObjectURL(url.current)
+      url.current = newUrl; offset.current = start; length.current = Math.min(30, total.current-start)
+      setPosition(start); onPosition(start)
+      const element = audio.current
+      element.src = newUrl; element.playbackRate = speed.current
+      setLoading(false)
+      if (desired.current) {
+        try { await element.play() } catch { if (generation.current === seq) { stop(); setError('Press Play to allow audio playback.') } }
+      }
+      if (generation.current !== seq) return
+      const following = start + length.current
+      if (following < total.current) {
+        // One bounded look-ahead; catch immediately so a failed prefetch never
+        // becomes an unhandled rejection. A boundary failure offers explicit retry.
+        const promise = fetchWindow(following).then(value => ({value}), error => ({error}))
+        next.current = {start:following, promise:promise.then(r => { if(r.error) throw r.error; return r.value })}
+        next.current.promise.catch(() => {})
+      }
+    } catch (e) {
+      if (generation.current !== seq) return
+      stop(); setLoading(false); setError(`Playback unavailable: ${errorText(e)}`)
+    }
+  }
+  useEffect(() => {
+    let live = true
+    const element = audio.current
+    rest(`/meetings/${meetingId}/playback`).then(data => {
+      if (!live) return
+      if (!(data.duration > 0) || !Number.isFinite(data.duration)) throw new Error('Audio has no playable duration')
+      total.current = data.duration; setTimeline(data)
+    }).catch(e => { if(live) setError(errorText(e)) })
+    rest(`/meetings/${meetingId}/waveform`, {timeoutMs:120000}).then(data => {
+      if(live) setPeaks(data.peaks || [])
+    }).catch(() => { if(live) setWaveError('Waveform unavailable. Playback and seeking remain available.') })
+    return () => { live=false; generation.current++; desired.current=false; element?.pause(); if(url.current) URL.revokeObjectURL(url.current); url.current=null }
+  }, [meetingId, rest])
+  useEffect(() => { if(suspended) stop() }, [suspended])
+  useEffect(() => { if(seekRequest && timeline) load(seekRequest.start, true) }, [seekRequest, timeline])
+  const toggle = async () => {
+    if(loading) { generation.current++; setLoading(false); stop(); return }
+    if(desired.current) { stop(); return }
+    if(!url.current || position >= total.current) { load(position >= total.current ? 0 : position, true); return }
+    desired.current=true
+    onStart?.()
+    try { await audio.current.play() } catch { stop(); setError('Audio could not start. Seek to retry.') }
+  }
+  const seek = value => load(Number(value), desired.current)
+  return h('section', {className:'mn-meeting-player mn-card', 'aria-label':'Meeting audio player'},
+    h('div', {className:'mn-wave', onClick:e => {
+      if(!timeline) return
+      const rect=e.currentTarget.getBoundingClientRect()
+      if(rect.width) seek((e.clientX-rect.left)/rect.width*timeline.duration)
+    }, 'aria-hidden':true},
+      h('svg', {viewBox:'0 0 1200 80', preserveAspectRatio:'none'},
+        h('line',{x1:0,x2:1200,y1:40,y2:40,stroke:'currentColor',strokeWidth:.5}),
+        ...peaks.map((p,i) => h('line', {key:i,x1:i*1200/peaks.length,x2:i*1200/peaks.length,y1:40-p*38,y2:40+p*38,stroke:'currentColor',strokeWidth:Math.max(1,1200/peaks.length*.7)})),
+        h('line',{x1:timeline?position/timeline.duration*1200:0,x2:timeline?position/timeline.duration*1200:0,y1:0,y2:80,stroke:'var(--ui-accent)',strokeWidth:3}))),
+    h('div',{className:'mn-player-controls'},
+      btn({onClick:toggle,disabled:!timeline,'aria-label':loading?'Cancel audio loading':running?'Pause meeting audio':'Play meeting audio'},loading?'Cancel buffering':running?'Pause':'Play'),
+      h('span',{className:'mn-nowrap'},`${clock(position)} / ${timeline?clock(timeline.duration):'…'}`),
+      h('input',{type:'range',min:0,max:timeline?.duration || 1,step:.1,value:position,disabled:!timeline,'aria-label':'Seek meeting audio',onChange:e=>seek(e.target.value)}),
+      h('select',{'aria-label':'Playback speed',value:rate,onChange:e=>{const v=Number(e.target.value);speed.current=v;setRate(v);if(audio.current)audio.current.playbackRate=v}},...[.75,1,1.25,1.5,2].map(v=>h('option',{key:v,value:v},`${v}×`)))),
+    h('audio',{ref:audio,preload:'auto','aria-label':'Full meeting audio',onPlay:()=>setRunning(true),onPause:()=>setRunning(false),
+      onTimeUpdate:()=>{const time=Math.min(total.current,offset.current+(audio.current?.currentTime || 0));setPosition(time);onPosition(time)},
+      onEnded:()=>{const end=offset.current+length.current;if(end<total.current && desired.current)load(end,true);else{stop();setPosition(total.current);onPosition(total.current)}},
+      onError:()=>{stop();setError('Audio could not be decoded. Seek to retry.')}}),
+    error && h('p',{role:'alert'},error), waveError && h('p',{className:'mn-faint'},waveError))
+}
+
 function Player({ playing, onClose }) {
   if (!playing) return null
   return h('div', { className: 'mn-player', role: 'region', 'aria-label': 'Audio playback' },
@@ -1008,11 +1109,13 @@ function SpeakersPanel({ meeting, participants, busy, play, correct, onJump, onC
           : btn({ size: 'xs', variant: 'ghost', disabled: busy, onClick: () => correct([['undo', '', c.id]]), 'aria-label': `Undo: ${describeCorrection(c, meeting.segments, nameOf)}` }, 'Undo')))))
 }
 
-function TranscriptPanel({ meeting, participants, playing, focusId, setFocusId, busy, play, correct }) {
+function TranscriptPanel({ meeting, participants, cursor, playing, focusId, setFocusId, busy, play, correct }) {
   const [query, setQuery] = useState('')
   const [speaker, setSpeaker] = useState('')
   const [editing, setEditing] = useState(null) // 'text:<id>' | 'speaker:<id>'
   const [drawer, setDrawer] = useState(false)
+  const [follow, setFollow] = useState(true)
+  const activeId = meeting.segments.find(s => cursor >= s.start && cursor < s.end)?.id
   const listRef = useRef(null)
   const corrected = useMemo(() => {
     const map = {}
@@ -1027,6 +1130,11 @@ function TranscriptPanel({ meeting, participants, playing, focusId, setFocusId, 
     const el = listRef.current?.querySelector(`[data-seg="${CSS_ESCAPE(focusId.id)}"]`)
     if (el) { el.scrollIntoView?.({ block: 'center', behavior: 'smooth' }); el.querySelector('.mn-time')?.focus({ preventScroll: true }) }
   }, [focusId, query, speaker])
+  useEffect(() => {
+    if (!follow || editing || query || speaker || !activeId) return
+    const pane = listRef.current, row = pane?.querySelector(`[data-seg="${CSS_ESCAPE(activeId)}"]`)
+    if (pane && row) pane.scrollTo?.({top: pane.scrollTop + row.getBoundingClientRect().top - pane.getBoundingClientRect().top - pane.clientHeight/3, behavior:'smooth'})
+  }, [activeId, follow, editing, query, speaker])
   const jump = participant => {
     const after = focusId ? (meeting.segments.find(s => s.id === focusId.id)?.start ?? -1) : (playing ? playing.start : -1)
     const next = nextTurnOf(meeting.segments, participant, after)
@@ -1043,6 +1151,7 @@ function TranscriptPanel({ meeting, participants, playing, focusId, setFocusId, 
           h('option', { value: '' }, 'All speakers'),
           ...participants.map(p => h('option', { key: p.id, value: p.id }, speakerName(p.id, p.name)))),
         h('span', { className: 'mn-grow' }),
+        h('label', null, h('input', {type:'checkbox',checked:follow,onChange:e=>setFollow(e.target.checked)}), ' Follow audio'),
         busy && h('span', { className: 'mn-faint', role: 'status' }, 'Saving…'),
         btn({ variant: 'ghost', disabled: busy || !latest, onClick: () => correct([['undo', '', latest.id]]),
           'aria-label': latest ? `Undo last change: ${describe(latest)}` : 'Undo last change', title: latest ? describe(latest) : 'Nothing to undo' }, 'Undo'),
@@ -1051,8 +1160,8 @@ function TranscriptPanel({ meeting, participants, playing, focusId, setFocusId, 
         shown.length === meeting.segments.length ? `${meeting.segments.length} turns · click a speaker name to reassign, double-click text to edit`
           : `Showing ${shown.length} of ${meeting.segments.length} turns`),
       shown.length === 0 && h('p', { className: 'mn-muted' }, 'No turns match.'),
-      h('ol', { className: 'mn-transcript', ref: listRef },
-        ...shown.map(s => h(SegmentRow, { key: s.id, s, participants, corrected: corrected[s.id], active: playing?.segmentId === s.id, flash: focusId?.id === s.id,
+      h('ol', { className: 'mn-transcript', ref: listRef, tabIndex:0, 'aria-label':'Scrollable transcript' },
+        ...shown.map(s => h(SegmentRow, { key: s.id, s, participants, corrected: corrected[s.id], active: activeId === s.id, flash: focusId?.id === s.id,
           busy, play, correct, editing, setEditing })))),
     h(SpeakersPanel, { meeting, participants, busy, play, correct, onJump: jump, onClose: () => setDrawer(false) }))
 }
@@ -1366,6 +1475,8 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
 function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab, onDeleted, onDeleteBusy }) {
   const participants = useMemo(() => participantsOf(meeting.segments, meeting.corrections), [meeting.segments, meeting.corrections])
   const [focusId, setFocusId] = useState(null)
+  const [cursor, setCursor] = useState(-1)
+  const [seekRequest, setSeekRequest] = useState(null)
   const duration = meeting.segments.length ? Math.max(...meeting.segments.map(s => s.end || 0)) : 0
   const ready = Boolean(meeting.active)
   const analysis = meeting.analysis
@@ -1388,6 +1499,7 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
         ready && h('span', null, `${meeting.segments.length} turns`),
         ready && analysis && h('span', null, `${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${analysis.needs_review ? ' · needs review' : ''}`))),
     notice && h(Callout, { tone: notice.tone || 'ok', role: 'status' }, h('p', null, notice.text)),
+    ready && h(MeetingPlayer, {meetingId:meeting.id,rest,seekRequest,onPosition:setCursor,suspended:Boolean(playing),onStart:closePlayer}),
     h(DeleteMeeting, { meeting, rest, disabled: busy, onBusy: onDeleteBusy, onDeleted }),
     meeting.transcription_chunks?.some(c => c.recognized_segments === 0) && meeting.segments.length > 0 &&
       h(Callout, { tone: 'warn', title: 'Some audio has no recognized words', role: 'status' }, 'At least one chunk returned no words. Review its audio before relying on these notes; this does not prove silence.'),
@@ -1411,7 +1523,7 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
       : h(Fragment, null,
         h(Tabs, { tabs, value: tab, onChange: setTab, label: 'Meeting sections' }),
         h('div', { role: 'tabpanel', id: `mn-panel-${tab}`, 'aria-labelledby': `mn-tab-${tab}`, tabIndex: -1 },
-          tab === 'transcript' && h(TranscriptPanel, { meeting, participants, playing, focusId, setFocusId, busy, play, correct }),
+          tab === 'transcript' && h(TranscriptPanel, { meeting, participants, cursor, playing, focusId, setFocusId, busy, play:segment=>{closePlayer();setSeekRequest({start:segment.start,at:Date.now()})}, correct }),
           tab === 'notes' && h(NotesPanel, { meeting, participants, rest, play, showSegment }),
           tab === 'actions' && h(ActionItemsPanel, { meeting, participants, rest, play, showSegment }))))
 }
