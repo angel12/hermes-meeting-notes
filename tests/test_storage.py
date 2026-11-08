@@ -123,6 +123,18 @@ def test_compressed_recordings_combine_and_play_across_boundary(recorded):
     assert clip(svc, combined, 3.5, 1) == pcm[-16000:] + second_pcm[:16000]
     assert storage.status(svc, combined) == {'combined': True}
     with pytest.raises(ValueError): storage.enqueue(svc, combined)
+    from meeting_notes.composition import organize_audio
+    from meeting_notes import deletion
+    disk = svc.root.parent/'combined-disk'; disk.mkdir()
+    configured = config(svc, disk)
+    organize_audio(svc, combined)
+    assert storage.run_once(svc)
+    owned = storage.status(svc, combined)
+    assert Path(owned['directory']).parent == Path(configured['managed_path'])/'audio'
+    for source in (mid, second):
+        deletion.remove(svc, source, deletion.review(svc, source)['token'], True)
+    assert clip(svc, combined, 3.5, 1) == pcm[-16000:] + second_pcm[:16000]
+
 
 
 def test_failed_conversion_keeps_current_files_and_retry_is_explicit(recorded, monkeypatch):
@@ -350,3 +362,30 @@ def test_opus_refuses_multiple_audio_tracks_without_losing_original(recorded, mo
     assert storage.status(svc, mid)['job']['state'] == 'failed'
     assert 'multi-track' in storage.status(svc, mid)['job']['error']
     assert paths(svc, mid) == previous and previous[0].read_bytes() == original
+
+
+def test_storage_heartbeat_retries_transient_database_error(recorded, monkeypatch):
+    from contextlib import contextmanager
+    import sqlite3
+    svc, mid, *_ = recorded
+    job = storage.enqueue(svc, mid)['job_id']
+    before = time.time() + 10
+    with svc.db() as db:
+        db.execute("UPDATE storage_jobs SET state='running',owner='test-owner',lease=? WHERE id=?", (before, job))
+    original_db = svc.db
+    attempts = []
+    @contextmanager
+    def busy_once():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError('database is locked')
+        with original_db() as db:
+            yield db
+    monkeypatch.setattr(svc, 'db', busy_once)
+    class Stop:
+        def wait(self, _):
+            return len(attempts) >= 2
+    storage._heartbeat(svc, {'id': job}, 'test-owner', Stop())
+    assert len(attempts) == 2
+    with original_db() as db:
+        assert db.execute('SELECT lease FROM storage_jobs WHERE id=?', (job,)).fetchone()[0] > before

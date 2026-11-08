@@ -117,9 +117,22 @@ def meetings():
 
 @router.post('/meetings/combine')
 def combine(body: dict):
-    if set(body) != {'request_id','title','date','timezone','sources'}:
+    if set(body) - {'own_audio'} != {'request_id','title','date','timezone','sources'}:
         raise HTTPException(400,'Expected request_id, title, date, timezone and ordered sources')
-    return call(lambda:runtime.service().combine(**body))
+    result = call(lambda:runtime.service().combine(**body))
+    if body.get('own_audio'):
+        runtime.start()
+    return result
+
+
+@router.post('/meetings/{ident}/organize-audio')
+def organize_audio(ident: str, body: dict):
+    if set(body) != {'confirm', 'settings'} or body['confirm'] is not True or not isinstance(body['settings'], dict):
+        raise HTTPException(400, 'Confirm the reviewed audio destination')
+    from meeting_notes.composition import organize_audio
+    result = call(lambda: organize_audio(runtime.service(), ident, expected_settings=body['settings']))
+    runtime.start()
+    return result
 
 
 @router.get('/meetings/{ident}')

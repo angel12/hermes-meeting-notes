@@ -13,7 +13,13 @@ from .transcript import effective
 from . import storage, audio as audio_files
 
 
-def combine(svc, request_id, title, date, timezone, sources):
+def combine(svc, request_id, title, date, timezone, sources, own_audio=False):
+    if type(own_audio) is not bool:
+        raise ValueError('own_audio must be a boolean')
+    return _combine(svc, request_id, title, date, timezone, sources, own_audio)
+
+
+def _combine(svc, request_id, title, date, timezone, sources, own_audio):
     if not isinstance(request_id, str) or not 1 <= len(request_id) <= 100:
         raise ValueError('A stable request ID is required')
     if not isinstance(title, str) or not title.strip() or len(title) > 300:
@@ -33,7 +39,7 @@ def combine(svc, request_id, title, date, timezone, sources):
             raise ValueError('Each source needs its meeting ID, active transcript and revision')
     if len({s['id'] for s in sources}) != len(sources):
         raise ValueError('A recording can only appear once')
-    request_hash = hashlib.sha256(json.dumps([title,date,timezone,sources],sort_keys=True).encode()).hexdigest()
+    request_hash = hashlib.sha256(json.dumps([title,date,timezone,sources] + ([True] if own_audio else []),sort_keys=True).encode()).hexdigest()
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         previous = db.execute('SELECT * FROM compositions WHERE request_id=?',(request_id,)).fetchone()
@@ -91,7 +97,16 @@ def combine(svc, request_id, title, date, timezone, sources):
                    (transcript,meeting,str(raw_path),hashlib.sha256(raw).hexdigest(),json.dumps(segments)))
         db.execute('INSERT INTO jobs(id,meeting,state) VALUES(?,?,?)',(uid(),meeting,'completed'))
         db.execute('INSERT INTO compositions VALUES(?,?,?,?)',(meeting,request_id,request_hash,json.dumps(parts)))
+        if own_audio:
+            from .composition_storage import enqueue
+            enqueue(svc, meeting, db=db)
     return {'id':meeting}
+
+
+def organize_audio(svc, meeting, expected_settings=None):
+    from .composition_storage import enqueue
+    enqueue(svc, meeting, expected_settings=expected_settings)
+    return storage.status(svc, meeting)
 
 
 def audio_window(svc, meeting, start, duration):
@@ -118,7 +133,8 @@ def audio_window(svc, meeting, start, duration):
                 count = part['frames']
                 left, right = max(begin, offset), min(end, offset+count)
                 if left < right:
-                    path = storage.playback_path(svc, db, part['meeting_id'])
+                    owned = db.execute('SELECT playback FROM composition_audio WHERE meeting=? AND part=?', (meeting, part.get('part'))).fetchone()
+                    path = storage.check_audio_path(svc, owned[0]) if owned else storage.playback_path(svc, db, part['meeting_id'])
                     try:
                         file = files.enter_context(path.open('rb'))
                     except OSError:

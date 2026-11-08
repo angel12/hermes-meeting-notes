@@ -390,6 +390,7 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
   const [title, setTitle] = useState('')
   const [date, setDate] = useState('')
   const [timezone, setTimezone] = useState('')
+  const [ownAudio, setOwnAudio] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const request = useRef(null)
@@ -422,6 +423,7 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
     setBusy(true); onBusy(true)
     try {
       const body = { title: title.trim(), date, timezone, sources: sources.map(({ id, active, revision }) => ({ id, active, revision })) }
+      if (ownAudio) body.own_audio = true
       const signature = JSON.stringify(body)
       if (request.current?.signature !== signature) {
         const bytes = new Uint8Array(16)
@@ -452,6 +454,8 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
     h(Field, { label: 'Meeting date with UTC offset', hint: 'Used to interpret dates in the combined notes.' }, h('input', { className: 'mn-input', value: date, disabled: busy, onChange: e => setDate(e.target.value) })),
     h(Field, { label: 'Meeting timezone' }, h('input', { className: 'mn-input', value: timezone, disabled: busy, onChange: e => setTimezone(e.target.value) })),
     h('p', { className: 'mn-muted' }, 'Recordings play back to back; gaps or overlaps are not inferred. Each recording keeps separate speakers until you merge them. This copies the current corrected transcripts; later edits to originals do not change the combined meeting. Generate new notes after reviewing it.'),
+    h('label', null, h('input', { type: 'checkbox', checked: ownAudio, disabled: busy, onChange: e => setOwnAudio(e.target.checked) }), ' Move audio into a numbered folder owned by the combined meeting'),
+    ownAudio && h('p', { className: 'mn-muted' }, 'Queues a background move into your configured audio storage with 01-, 02-, … filenames in playback order. After it completes, you can delete the original meeting entries; their notes are not copied. Original files on your recorder/computer stay unchanged.'),
     error && h(Callout, { tone: 'error', role: 'alert' }, error),
     btn({ type: 'submit', variant: 'default', disabled: busy || sources.length < 2 }, busy ? 'Combining…' : 'Create combined meeting'))
 }
@@ -599,8 +603,35 @@ export function RecordingStorage({ meeting, rest }) {
     } catch (e) { if (alive.current) setError(errorText(e)) }
     finally { locked.current = false; if (alive.current) setBusy(false) }
   }
-  if (meeting.recordings?.length) return h('p', { className: 'mn-faint' }, 'Audio storage is managed on each original recording. Combined meetings share those files.')
+  const organize = async () => {
+    if (locked.current) return
+    locked.current = true; serial.current++; setBusy(true); setError('')
+    try {
+      const result = await rest(`/meetings/${meeting.id}/organize-audio`, { method: 'POST', body: { confirm: true, settings: policy } })
+      if (alive.current) { setValue(result); setReview(false) }
+    } catch (e) { if (alive.current) setError(errorText(e)) }
+    finally { locked.current = false; if (alive.current) setBusy(false) }
+  }
   const running = ['queued', 'running'].includes(value?.job?.state)
+  if (meeting.recordings?.length) return h('details', { className: 'mn-card' },
+    h('summary', null, 'Audio storage'),
+    value?.owns_audio
+      ? h(Fragment, null,
+          h('p', null, 'This combined meeting owns its audio. Original meeting entries can be deleted unless another combination still depends on them.'),
+          h('p', { className: 'mn-faint' }, value.directory),
+          h('ol', null, ...(value.files || []).map(file => h('li', { key: file }, file))))
+      : h('p', null, 'Move audio into a numbered folder so this combined meeting owns its audio. You can then delete the original meeting entries unless another combination needs them. Their notes are not copied.'),
+    value?.job && h('p', { role: 'status' }, `Audio move: ${value.job.state}`),
+    value?.job?.error && h(Callout, { tone: 'error' }, value.job.error),
+    value?.job?.cleanup_pending && h('p', null, 'Older copies are kept while other meetings use them or their storage is unavailable.'),
+    !review && btn({ disabled: busy || running || !value, onClick: reviewSettings },
+      value?.owns_audio ? 'Review audio relocation' : 'Review numbered audio move'),
+    review && policy && h('div', null,
+      h('p', null, `Destination: ${policy.managed_path}`),
+      h('p', null, 'Creates a new numbered folder and moves audio in the background. Current recording and playback formats are preserved; compression settings are not applied. Keep both storage locations connected until the move and cleanup finish.'),
+      btn({ disabled: busy || running, onClick: organize }, 'Confirm audio move'),
+      btn({ variant: 'ghost', disabled: busy, onClick: () => setReview(false) }, 'Cancel')),
+    error && h(Callout, { tone: 'error', role: 'alert' }, error))
   const size = n => n == null ? 'unavailable' : `${(n / 1048576).toFixed(1)} MiB`
   return h('details', { className: 'mn-card' }, h('summary', null, 'Audio storage'),
     value && !value.combined && h(Fragment, null,
@@ -666,7 +697,7 @@ export function DeleteMeeting({ meeting, rest, onDeleted, onBusy = () => {}, dis
     review && h('form', { className: 'mn-card', 'aria-label': 'Confirm meeting deletion', onSubmit: remove },
       h('h3', null, `Delete “${review.title}”?`),
       h('p', null, 'Permanently remove this meeting’s transcripts, corrections, notes, action proposals and local handoff receipts. This cannot be undone.'),
-      h('p', null, review.combined ? 'Its source recordings and their meetings are kept.' : 'Its managed recording, playback and raw transcription files will also be removed.'),
+      h('p', null, 'Managed audio is removed only when no other meeting uses it. Other meeting entries are kept.'),
       h('p', null, 'The original file on your recorder/computer, Hermes chat history, backups and external calendar events or tasks are not deleted.'),
       ...review.blockers.map((text, i) => h(Callout, { key: i, tone: 'warn' }, text)),
       review.dependencies.length > 0 && h('ul', null, ...review.dependencies.map(d => h('li', { key: d.id }, d.title))),
