@@ -62,3 +62,17 @@ Deployed only `desktop/plugin.js` to the isolated test host, then used the authe
 The shared UI now keeps a waveform player above the meeting content. It uses the full canonical recording duration, including combined source boundaries and trailing audio, with global seek, pause and speed controls. Transcript turn timestamps seek this player. A bounded look-ahead advances 30-second authenticated JSON audio windows; this supports both UI hosts and OAuth remotes without new credential handling or a full-recording browser allocation. Transitions can buffer and are not claimed sample-gapless. Saved-note excerpt playback remains available and pauses the meeting player.
 
 The transcript list scrolls independently beneath its toolbar. Playback highlights the current timed turn and scrolls only the list. Follow audio can be disabled, and editing/search/filtering suppress automatic movement. The waveform comes from real PCM sample peaks, not transcript timing or decorative data. Missing waveform computation does not prevent duration-based playback. No transcription jobs or provider calls are started by these read-only routes. Native/Webapp visual and audible acceptance of this addition remains pending.
+
+
+## UI cleanup — 2026-11-11
+
+Layout pass on the shared UI; no API changes. Design reference: the "Meeting Notes UI cleanup" canvas (transcript, notes and new-recording screens).
+
+- **Content first.** The meeting header is the title, one line of facts and a ⋯ **Recording details** button. Chunk boundaries, combined sources, audio storage and deletion moved into a collapsible Recording details section below the tabs; the button opens and scrolls to it. Status/retry and no-words warnings stay above the player.
+- **One player.** The separate clip player is gone. Transcript turns, speaker samples and note/action quotes all seek the meeting player. Quotes pass an end time: the passage is highlighted on the waveform and playback stops there. The waveform is the seek control (an invisible range input over it keeps keyboard and test access), with a speaker-colour lane beneath.
+- **Transcript.** Timestamp column on the left; the speaker name shows once per run, and continuation turns keep a dot-only reassign control beside the time. Source/chunk origin is a tooltip plus a short “Part N” for combined meetings. Corrections are small pencil markers.
+- **Speakers panel.** Help text moved into an info tooltip; talk-time bar per speaker; play/next/merge are icon buttons with the same accessible names.
+- **Notes.** Sections are plain headed lists instead of cards, citations are compact, commitments show owner and due on one row, and section links are pills. With existing notes the request box collapses to one row with **Show request**.
+- **Sidebar and forms.** Settings is a gear icon in the sidebar header, Combine is an icon button beside New recording, meetings are grouped by month with a filter once there are more than five. New recording has a drop zone. Callouts are tinted instead of left-bordered. The tab is now “Action items”.
+
+All 54 synthetic UI scenarios pass. Viewed in a local preview with stand-in SDK components and sample data, light and dark; real Webapp and native Desktop visual acceptance is still pending.
