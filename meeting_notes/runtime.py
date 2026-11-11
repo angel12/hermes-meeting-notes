@@ -43,6 +43,8 @@ def adapter_for(settings, root):
         return XaiOAuth(settings, check_owner)
     if kind != 'nemo_speech_cpp':
         raise SetupError('Unsupported transcription adapter')
+    if not settings.get('endpoint'):
+        raise SetupError('Set the NeMo-Speech.cpp server endpoint in Meeting Notes settings, then Retry. No audio was sent.')
     from agent.secret_scope import get_secret
     secret = get_secret('MEETING_NOTES_ASR_KEY')
     if not secret:

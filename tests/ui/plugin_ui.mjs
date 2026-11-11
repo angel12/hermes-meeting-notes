@@ -54,7 +54,7 @@ function effective(corrections) {
   const names = {}, over = {}, texts = {}
   for (const c of corrections) {
     if (undone.has(c.id) || c.kind === 'undo') continue
-    if (c.kind === 'merge') { const o = labels[c.target], n = labels[c.value]; labels = Object.fromEntries(Object.entries(labels).map(([k, v]) => [k, v === o ? n : v])) }
+    if (c.kind === 'merge') { const o = labels[c.target], n = labels[c.value]; labels = Object.fromEntries(Object.entries(labels).map(([k, v]) => [k, v === o ? n : v])); for (const k in over) if (over[k] === o) over[k] = n }
     if (c.kind === 'rename') names[c.target] = c.value
     if (c.kind === 'speaker') over[c.target] = c.value
     if (c.kind === 'text') texts[c.target] = c.value
@@ -379,7 +379,7 @@ test('tabs support arrow-key navigation', async () => {
   assert.equal(screen.getByRole('tab', { name: /Transcript/ }).getAttribute('aria-selected'), 'true')
 })
 
-test('merges preserve explicit overrides and cannot target an obsolete label', async () => {
+test('merges keep unrelated overrides and cannot target an obsolete label', async () => {
   const b = makeBackend()
   b.state.corrections.push({ id: 'c3', revision: 3, kind: 'merge', target: '2', value: '1', transcript: T })
   b.state.corrections.push({ id: 'c4', revision: 4, kind: 'speaker', target: `${T}:s00002`, value: '2', transcript: T })
@@ -390,7 +390,7 @@ test('merges preserve explicit overrides and cannot target an obsolete label', a
   fireEvent.click(within(panel).getByRole('button', { name: 'Merge Host into another speaker' }))
   const select = within(panel).getByLabelText('Merge Host into')
   assert.deepEqual([...select.options].map(o => o.value), ['1'])
-  assert.ok(within(panel).getByText(/Individual speaker overrides stay unchanged/))
+  assert.ok(within(panel).getByText(/including turns you moved to this speaker/))
   fireEvent.click(within(panel).getByRole('button', { name: 'Merge' }))
   await screen.findByText('2 speakers')
   assert.equal(effective(b.state.corrections)[2].participant, '2')

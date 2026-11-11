@@ -5,6 +5,9 @@ from urllib.parse import urlsplit
 XAI_ENDPOINT = 'https://api.x.ai/v1'
 ADAPTERS = {'custom': 'nemo_speech_cpp', 'xai': 'xai_oauth'}
 FIELDS = {'endpoint', 'model', 'timeout', 'max_audio_seconds'}
+# No built-in server address: an unconfigured install must not send the ASR
+# key and audio to whatever host answers at a guessed address.
+CUSTOM_ENDPOINT = ''
 
 
 def read(db):
@@ -12,7 +15,7 @@ def read(db):
     if row:
         return json.loads(row[0])
     legacy = db.execute('SELECT data FROM settings WHERE id=1').fetchone()
-    custom = dict(endpoint='http://10.0.1.128:18082/v1', model='nemotron-3.5-transcribe-30b-a4b', timeout=600, max_audio_seconds=3600)
+    custom = dict(endpoint=CUSTOM_ENDPOINT, model='nemotron-3.5-transcribe-30b-a4b', timeout=600, max_audio_seconds=3600)
     if legacy:
         custom.update(json.loads(legacy[0]))
     return dict(active='custom', revision=0, connections=dict(custom=custom, xai=dict(
