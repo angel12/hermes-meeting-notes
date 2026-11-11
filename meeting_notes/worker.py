@@ -3,7 +3,7 @@ import json
 import hashlib
 import threading
 import time
-from .store import atomic_write, uid
+from .store import atomic_write, uid, working, renew_lease, retry_busy
 from .audio import prepare, slice_wave, cleanup_temporary_audio
 from .chunking import plan_for, parse_part, publish, PreparedAudioMismatch
 from . import storage
@@ -40,7 +40,7 @@ class Worker:
         with self.service.db() as db:
             db.execute('BEGIN IMMEDIATE')
             # One worker per profile database. Runtime disallows multiplex/routed profiles.
-            if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
+            if working(db):
                 return None
             job = db.execute("SELECT j.*,m.audio FROM jobs j JOIN meetings m ON m.id=j.meeting WHERE j.state='queued' ORDER BY j.rowid LIMIT 1").fetchone()
             if not job:
@@ -52,6 +52,16 @@ class Worker:
 
     def fenced(self, db, job):
         return db.execute("SELECT 1 FROM jobs WHERE id=? AND owner=? AND generation=? AND attempt=? AND lease>=? AND state IN ('preparing','in_flight')",(job['id'],self.owner,job['generation'],job['attempt'],time.time())).fetchone()
+
+    def record_response(self, job, path, status, data):
+        """Link a saved response to its attempt. False if the meeting was deleted."""
+        with self.service.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT 1 FROM jobs WHERE id=?', (job['id'],)).fetchone():
+                return False
+            db.execute('UPDATE attempts SET raw=? WHERE id=?',(str(path),job['attempt']))
+            db.execute('INSERT OR IGNORE INTO asr_responses VALUES(?,?,?)', (job['attempt'],status,hashlib.sha256(data).hexdigest()))
+            return True
 
     def run_once(self):
         from . import deletion
@@ -65,9 +75,9 @@ class Worker:
             return False
         stop = threading.Event()
         def beat():
-            while not stop.wait(10):
-                with self.service.db() as db:
-                    db.execute("UPDATE jobs SET lease=? WHERE id=? AND owner=? AND attempt=? AND lease>=? AND state IN ('preparing','in_flight')",(time.time()+LEASE,job['id'],self.owner,job['attempt'],time.time()))
+            renew_lease(self.service, stop,
+                "UPDATE jobs SET lease=? WHERE id=? AND owner=? AND attempt=? AND lease>=? AND state IN ('preparing','in_flight')",
+                lambda: (time.time()+LEASE, job['id'], self.owner, job['attempt'], time.time()))
         heartbeat = threading.Thread(target=beat,daemon=True)
         heartbeat.start()
         sent, part_saved = False, False
@@ -120,15 +130,15 @@ class Worker:
             sent = True
             status, data = adapter.transcribe(request_audio)
             path = self.service.root/'raw'/f'{job["attempt"]}.json'
-            with self.service.db() as db:
-                db.execute('BEGIN IMMEDIATE')
+            # Save the paid result before waiting for the database. The file
+            # name is unique to this attempt, so no lock is needed to write it.
+            atomic_write(path,data)
+            state,error = 'interrupted_unknown','Response saved to disk, but the database stayed busy and it could not be recorded. Explicit Retry required.'
+            if not retry_busy(lambda: self.record_response(job,path,status,data)):
                 # Deletion may follow lease recovery while the old HTTP call is
                 # still returning. Never resurrect its raw file after deletion.
-                if not db.execute('SELECT 1 FROM jobs WHERE id=?', (job['id'],)).fetchone():
-                    return True
-                atomic_write(path,data)
-                db.execute('UPDATE attempts SET raw=? WHERE id=?',(str(path),job['attempt']))
-                db.execute('INSERT INTO asr_responses VALUES(?,?,?)', (job['attempt'],status,hashlib.sha256(data).hexdigest()))
+                path.unlink(missing_ok=True)
+                return True
             state, error = 'invalid_response', 'Response saved but invalid; inspect adapter compatibility. No automatic resend.'
             if status != 200:
                 state, error = 'interrupted_unknown', f'ASR HTTP {status}; response saved. Explicit Retry required.'
@@ -137,13 +147,20 @@ class Worker:
             else:
                 segments = parse_part(data,job['attempt'],part['frames']/plan['rate'],total>1,
                                       json.loads(plan['settings']).get('adapter','nemo_speech_cpp'))
-                with self.service.db() as db:
-                    db.execute('BEGIN IMMEDIATE')
-                    if not self.fenced(db,job):
-                        state,error='interrupted_unknown','Response saved after the lease ended; explicit Retry required.'
+                # From here on the response is valid; a busy database is not
+                # an adapter problem, and saved responses can be recovered.
+                state,error = 'interrupted_unknown','Response saved but could not be recorded; use Recover saved response.'
+                def save_part():
+                    with self.service.db() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        if not self.fenced(db,job):
+                            return False
+                        db.execute("UPDATE asr_parts SET state='completed',segments=?,raw=?,sha=? WHERE job=? AND idx=? AND attempt=?",
+                                   (json.dumps(segments),path.name,hashlib.sha256(data).hexdigest(),job['id'],part['idx'],job['attempt']))
                         return True
-                    db.execute("UPDATE asr_parts SET state='completed',segments=?,raw=?,sha=? WHERE job=? AND idx=? AND attempt=?",
-                               (json.dumps(segments),path.name,hashlib.sha256(data).hexdigest(),job['id'],part['idx'],job['attempt']))
+                if not retry_busy(save_part):
+                    state,error='interrupted_unknown','Response saved after the lease ended; explicit Retry required.'
+                    return True
                 part_saved = True
                 state,error = 'failed','Saved chunks could not be assembled; Retry resumes without retranscribing completed chunks.'
                 complete = publish(self,job,plan)
@@ -160,24 +177,29 @@ class Worker:
             if sent and state == 'failed' and not part_saved:
                 state,error = 'interrupted_unknown','Request interrupted; result unknown. Explicit Retry required.'
         finally:
-            stop.set()
-            heartbeat.join()
             if part_path:
                 part_path.unlink(missing_ok=True)
-            with self.service.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                if wav is not None and not db.execute('SELECT 1 FROM jobs WHERE id=?', (job['id'],)).fetchone():
-                    # Preparation can finish after a lost lease and deletion.
-                    # This meeting-specific derivative must not be resurrected.
-                    try:
-                        deletion.checked_file(self.service, wav).unlink(missing_ok=True)
-                    except (OSError, ValueError):
-                        pass
-                if self.fenced(db,job):
-                    db.execute('UPDATE jobs SET state=?,error=?,lease=NULL WHERE id=?',(state,error,job['id']))
-                    if local_only:
-                        db.execute('DELETE FROM asr_recovery WHERE job=?', (job['id'],))
-                    if not part_saved:
-                        db.execute('UPDATE asr_parts SET state=? WHERE job=? AND attempt=? AND state!=?',(state,job['id'],job['attempt'],'completed'))
-                db.execute('UPDATE attempts SET outcome=? WHERE id=?',('completed' if part_saved else state,job['attempt']))
+            def finish():
+                with self.service.db() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    if wav is not None and not db.execute('SELECT 1 FROM jobs WHERE id=?', (job['id'],)).fetchone():
+                        # Preparation can finish after a lost lease and deletion.
+                        # This meeting-specific derivative must not be resurrected.
+                        try:
+                            deletion.checked_file(self.service, wav).unlink(missing_ok=True)
+                        except (OSError, ValueError):
+                            pass
+                    if self.fenced(db,job):
+                        db.execute('UPDATE jobs SET state=?,error=?,lease=NULL WHERE id=?',(state,error,job['id']))
+                        if local_only:
+                            db.execute('DELETE FROM asr_recovery WHERE job=?', (job['id'],))
+                        if not part_saved:
+                            db.execute('UPDATE asr_parts SET state=? WHERE job=? AND attempt=? AND state!=?',(state,job['id'],job['attempt'],'completed'))
+                    db.execute('UPDATE attempts SET outcome=? WHERE id=?',('completed' if part_saved else state,job['attempt']))
+            try:
+                # Keep the lease alive while waiting for a busy database.
+                retry_busy(finish)
+            finally:
+                stop.set()
+                heartbeat.join()
         return True

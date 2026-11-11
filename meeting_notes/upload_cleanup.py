@@ -3,6 +3,7 @@ import re
 import time
 from .storage import upload_root
 from .deletion import checked_file
+from .store import working
 
 TTL = 86400
 
@@ -12,7 +13,7 @@ def cleanup(svc):
     removed = 0
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
+        if working(db):
             return 0
         rows = db.execute('''SELECT u.id FROM uploads u LEFT JOIN upload_cleanup_retry r ON r.upload=u.id
             WHERE u.meeting IS NULL AND u.created<? AND (r.next_check IS NULL OR r.next_check<=?)
@@ -30,7 +31,9 @@ def cleanup(svc):
                     continue
                 root = upload_root(svc, db, ident)
             checked_file(svc, root/'uploads'/f'{ident}.0')
-            paths = [root/'audio'/f'{ident}.upload']
+            # Finalize stages under a per-call name; older versions used one fixed name.
+            staged = re.compile(re.escape(ident)+r'(?:\.[a-f0-9]{32})?\.upload')
+            paths = [p for p in (root/'audio').glob(ident+'.*') if staged.fullmatch(p.name)]
             # Include atomic-write remnants even if the chunk DB commit was lost.
             pattern = re.compile(re.escape(ident)+r'\.\d+(?:\.[a-f0-9]{32}\.tmp)?')
             paths.extend(p for p in (root/'uploads').glob(ident+'.*') if pattern.fullmatch(p.name))

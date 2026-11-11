@@ -75,24 +75,29 @@ class Service(Store):
         return {'accepted':True}
 
     def finalize(self, ident):
+        import os
         from .storage import upload_root
+        def check(db, upload, chunks=None):
+            if not upload:
+                raise ValueError('Unknown upload')
+            if upload['created'] < time.time()-86400:
+                raise ValueError('Upload expired; import the recording again')
+            if chunks is not None and len(chunks) != math.ceil(upload['size']/CHUNK):
+                raise ValueError('Upload is incomplete')
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             upload = db.execute('SELECT * FROM uploads WHERE id=?',(ident,)).fetchone()
-            if not upload:
-                raise ValueError('Unknown upload')
-            if upload['meeting']:
+            if upload and upload['meeting']:
                 return {'id':upload['meeting']}
-            if upload['created'] < time.time()-86400:
-                raise ValueError('Upload expired; import the recording again')
-            chunks = list(db.execute('SELECT * FROM chunks WHERE upload=? ORDER BY idx',(ident,)))
-            if len(chunks) != math.ceil(upload['size']/CHUNK):
-                raise ValueError('Upload is incomplete')
+            chunks = [dict(c) for c in db.execute('SELECT * FROM chunks WHERE upload=? ORDER BY idx',(ident,))]
+            check(db, upload, chunks)
             location = upload_root(self, db, ident)
-            staging = location/'audio'/f'{ident}.upload'
-            digest = hashlib.sha256()
-            with staging.open('wb') as out:
-                import os
+        # Assemble and hash up to 512 MiB without holding the write lock. Each
+        # call uses its own staging file; upload cleanup removes leftovers.
+        staging = location/'audio'/f'{ident}.{uid()}.upload'
+        digest = hashlib.sha256()
+        try:
+            with staging.open('xb') as out:
                 os.chmod(staging,0o600)
                 for c in chunks:
                     data = (location/'uploads'/f'{ident}.{c["idx"]}').read_bytes()
@@ -103,20 +108,26 @@ class Service(Store):
                 out.flush()
                 os.fsync(out.fileno())
             sha = digest.hexdigest()
-            old = db.execute('SELECT id FROM meetings WHERE sha=?',(sha,)).fetchone()
-            meeting = old[0] if old else uid()
-            if not old:
-                final = location/'audio'/sha
-                staging.replace(final)
-                fd = os.open(final.parent, os.O_RDONLY)
-                try: os.fsync(fd)
-                finally: os.close(fd)
-                m = json.loads(upload['metadata'])
-                db.execute('INSERT INTO meetings(id,title,date,timezone,audio,sha) VALUES(?,?,?,?,?,?)',(meeting,m['title'],m['date'],m['timezone'],str(final),sha))
-                db.execute('INSERT INTO jobs(id,meeting,state) VALUES(?,?,?)',(uid(),meeting,'queued'))
-            else:
-                staging.unlink()
-            db.execute('UPDATE uploads SET meeting=? WHERE id=?',(meeting,ident))
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                upload = db.execute('SELECT * FROM uploads WHERE id=?',(ident,)).fetchone()
+                if upload and upload['meeting']:
+                    return {'id':upload['meeting']}  # Another finalize call won.
+                check(db, upload)
+                old = db.execute('SELECT id FROM meetings WHERE sha=?',(sha,)).fetchone()
+                meeting = old[0] if old else uid()
+                if not old:
+                    final = location/'audio'/sha
+                    staging.replace(final)
+                    fd = os.open(final.parent, os.O_RDONLY)
+                    try: os.fsync(fd)
+                    finally: os.close(fd)
+                    m = json.loads(upload['metadata'])
+                    db.execute('INSERT INTO meetings(id,title,date,timezone,audio,sha) VALUES(?,?,?,?,?,?)',(meeting,m['title'],m['date'],m['timezone'],str(final),sha))
+                    db.execute('INSERT INTO jobs(id,meeting,state) VALUES(?,?,?)',(uid(),meeting,'queued'))
+                db.execute('UPDATE uploads SET meeting=? WHERE id=?',(meeting,ident))
+        finally:
+            staging.unlink(missing_ok=True)
         # The finalized copy is committed before removing duplicate upload chunks.
         for c in chunks:
             try: (location/'uploads'/f'{ident}.{c["idx"]}').unlink(missing_ok=True)

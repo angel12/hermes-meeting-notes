@@ -44,6 +44,9 @@ def effective(segments, corrections):
         if kind == "merge":
             old, new = labels[target], labels[value]
             labels = {k: new if v == old else v for k, v in labels.items()}
+            # Turns moved to the merged speaker earlier move with it, so later
+            # renames and note owners apply to them too.
+            overrides = {k: new if v == old else v for k, v in overrides.items()}
         elif kind == "rename":
             names[target] = value
         elif kind == "speaker":

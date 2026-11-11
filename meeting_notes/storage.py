@@ -7,12 +7,11 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import threading
 import time
 
 from . import audio
-from .store import uid, atomic_write
+from .store import uid, atomic_write, working, renew_lease
 
 DEFAULTS = {'directory': '', 'compress_playback': False, 'archive_mode': 'original'}
 LEASE = 60
@@ -252,7 +251,7 @@ def cleanup(svc):
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         db.execute("UPDATE storage_jobs SET state='failed',error='Storage work was interrupted; the current audio was kept. Retry the move.' WHERE state='running' AND lease<?", (time.time(),))
-        if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
+        if working(db):
             return
         candidates = {file['path'] for row in db.execute("SELECT cleanup FROM storage_jobs WHERE state='completed' AND cleanup!='[]'")
                       for file in json.loads(row[0]) if not audio_referenced(db, file['path'])}
@@ -269,7 +268,7 @@ def cleanup(svc):
             pass
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
+        if working(db):
             return
         # Allocated output paths are durable before encoding starts. A crash may
         # leave a partial file, but never makes it authoritative.
@@ -310,17 +309,8 @@ def cleanup(svc):
 
 
 def _heartbeat(svc, job, owner, stop):
-    while not stop.wait(10):
-        try:
-            with svc.db() as db:
-                updated = db.execute("UPDATE storage_jobs SET lease=? WHERE id=? AND owner=? AND state='running' AND lease>=?",
-                                     (time.time()+LEASE, job['id'], owner, time.time()))
-                if not updated.rowcount:
-                    return  # Never revive an expired or reassigned lease.
-        except sqlite3.OperationalError:
-            continue  # A transient busy database need not permanently stop renewal.
-        except Exception:
-            return
+    renew_lease(svc, stop, "UPDATE storage_jobs SET lease=? WHERE id=? AND owner=? AND state='running' AND lease>=?",
+                lambda: (time.time()+LEASE, job['id'], owner, time.time()))
 
 
 def run_once(svc):
@@ -329,7 +319,7 @@ def run_once(svc):
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         db.execute("UPDATE storage_jobs SET state='failed',error='Storage work was interrupted. Originals and any committed replacement remain safe; explicitly apply settings again to retry.' WHERE state='running' AND lease<?", (time.time(),))
-        if db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone():
+        if working(db):
             return False
         row = db.execute("SELECT * FROM storage_jobs WHERE state='queued' ORDER BY rowid LIMIT 1").fetchone()
         if not row:

@@ -12,6 +12,50 @@ def uid():
     return uuid.uuid4().hex
 
 
+ACTIVE_WORK = ("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') "
+               "UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'")
+
+
+def working(db):
+    """True while a transcription or storage job holds the profile's single work slot."""
+    return db.execute(ACTIVE_WORK).fetchone() is not None
+
+
+def busy(exc):
+    return isinstance(exc, sqlite3.OperationalError) and ('locked' in str(exc) or 'busy' in str(exc))
+
+
+def retry_busy(operation, *, attempts=20, pause=1.0, sleep=None):
+    """Run a short transaction again while SQLite reports a busy database.
+
+    Each attempt already waits up to the connection timeout. Use this only for
+    writes that must not be lost, such as recording a received ASR response.
+    """
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not busy(exc) or attempt == attempts - 1:
+                raise
+            (sleep or time.sleep)(pause)
+
+
+def renew_lease(svc, stop, sql, params, interval=10):
+    """Heartbeat loop. A busy database skips one renewal; a lost lease stops it.
+
+    `params` is called on each tick so it can include the current time.
+    """
+    while not stop.wait(interval):
+        try:
+            with svc.db() as db:
+                if not db.execute(sql, params()).rowcount:
+                    return  # Never revive an expired or reassigned lease.
+        except sqlite3.OperationalError:
+            continue
+        except Exception:
+            return
+
+
 def atomic_write(path, data):
     path = Path(path)
     temp = path.with_name(path.name + '.' + uid() + '.tmp')

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from . import storage
+from .store import working
 
 
 def _local(svc):
@@ -12,7 +13,7 @@ def _local(svc):
 
 
 def _working(db):
-    return db.execute("SELECT 1 FROM jobs WHERE state IN ('preparing','in_flight') UNION ALL SELECT 1 FROM storage_jobs WHERE state='running'").fetchone() is not None
+    return working(db)
 
 
 def _review(db, meeting):
@@ -94,6 +95,24 @@ def remove(svc, meeting, token, confirm):
     _local(svc)
     if confirm is not True or not isinstance(token, str):
         raise ValueError('Review and explicitly confirm deletion first')
+    # Hash files before taking the write lock; large recordings on slow disks
+    # must not block the worker. The locked pass reuses a hash only for a file
+    # whose identity, size and timestamps are unchanged.
+    hashes = {}
+    with svc.db() as db:
+        db.execute('BEGIN')
+        pending = db.execute('SELECT 1 FROM deletions WHERE meeting=?', (meeting,)).fetchone()
+        current = None if pending else _review(db, meeting)
+        values = sorted(_paths(svc, db, meeting)) if current and current['token'] == token and not current['blockers'] else []
+    for value in values:
+        try:
+            path = checked_file(svc, value)
+            before = storage.file_signature(path)
+            sha = storage.digest(path)
+            if storage.file_signature(path) == before:
+                hashes[str(path)] = (sha, before)
+        except (OSError, ValueError):
+            pass  # The locked pass reports the real error.
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         previous = db.execute('SELECT token,root FROM deletions WHERE meeting=?', (meeting,)).fetchone()
@@ -110,7 +129,10 @@ def remove(svc, meeting, token, confirm):
             for value in sorted(_paths(svc, db, meeting)):
                 path = checked_file(svc, value)
                 if path.exists():
-                    files.append({'path': str(path), 'sha': storage.digest(path)})
+                    sha, signature = hashes.get(str(path), (None, None))
+                    if signature != storage.file_signature(path):
+                        sha = storage.digest(path)  # Rare: changed since the first pass.
+                    files.append({'path': str(path), 'sha': sha})
             db.execute('INSERT INTO deletions VALUES(?,?,?,?)', (meeting, token, str(svc.root), json.dumps(files)))
             for table in ('handoff_claims',):
                 db.execute(f'DELETE FROM {table} WHERE handoff IN (SELECT id FROM action_handoffs WHERE meeting=?)', (meeting,))
@@ -140,6 +162,24 @@ def status(svc):
 
 def cleanup(svc, *, automatic=False):
     _local(svc)
+    # First pass: list candidates under the lock, then hash outside it.
+    with svc.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if _working(db):
+            return status(svc)
+        candidates = [file for row in db.execute("SELECT files FROM deletions WHERE root=? AND files!='[]'", (str(svc.root),))
+                      for file in json.loads(row['files']) if not (automatic and file.get('manual_retry'))]
+    verified = {}
+    for file in candidates:
+        try:
+            path = checked_file(svc, file['path'])
+            if path.exists():
+                before = storage.file_signature(path)
+                sha = storage.digest(path)
+                if storage.file_signature(path) == before:
+                    verified[str(path)] = (sha, before)
+        except (OSError, ValueError):
+            pass
     with svc.db() as db:
         db.execute('BEGIN IMMEDIATE')
         if _working(db):
@@ -157,7 +197,13 @@ def cleanup(svc, *, automatic=False):
                     if used or storage.audio_referenced(db, path):
                         continue
                     if path.exists():
-                        if storage.digest(path) != file['sha']:
+                        sha, signature = verified.get(str(path), (None, None))
+                        if signature != storage.file_signature(path):
+                            # Changed or created since the first pass. Check again
+                            # on the next run instead of hashing under the lock.
+                            pending.append(file)
+                            continue
+                        if sha != file['sha']:
                             pending.append({**file, 'manual_retry': True})
                             continue
                         path.unlink()

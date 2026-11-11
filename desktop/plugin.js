@@ -252,13 +252,11 @@ export const speakerName = (participant, name) => name || `Participant ${partici
 /** Current participants in first-appearance order, with talk time and counts. */
 export function participantsOf(segments = [], corrections = []) {
   let labels = Object.fromEntries(segments.map(s => [s.label, s.label]))
-  const overridden = new Set()
   for (const c of activeCorrections(corrections)) {
     if (c.kind === 'merge') {
       const from = labels[c.target], to = labels[c.value]
       labels = Object.fromEntries(Object.entries(labels).map(([key, value]) => [key, value === from ? to : value]))
     }
-    if (c.kind === 'speaker') overridden.add(c.target)
   }
   const map = new Map()
   for (const s of segments) {
@@ -266,10 +264,10 @@ export function participantsOf(segments = [], corrections = []) {
     const p = map.get(s.participant)
     p.segments += 1
     p.seconds += Math.max(0, (s.end || 0) - (s.start || 0))
-    if (!overridden.has(s.id)) {
-      p.mergeSegments += 1
-      p.mergeSeconds += Math.max(0, (s.end || 0) - (s.start || 0))
-    }
+    // A merge moves every turn shown under this speaker, including turns
+    // that were moved to it individually.
+    p.mergeSegments += 1
+    p.mergeSeconds += Math.max(0, (s.end || 0) - (s.start || 0))
     p.words += s.word_count || 0
     if (!p.name && s.name) p.name = s.name
   }
@@ -1103,7 +1101,7 @@ function SpeakerRow({ person, participants, total, busy, play, correct, onJump }
       h(Field, { label: `Merge ${label} into` },
         h('select', { className: 'mn-input mn-input-sm', value: into, onChange: e => setInto(e.target.value), disabled: busy },
           ...others.map(o => h('option', { key: o.id, value: o.id }, speakerName(o.id, o.name))))),
-      target && h('p', { className: 'mn-faint' }, `${person.mergeSegments} ${person.mergeSegments === 1 ? 'turn' : 'turns'} (${spokenDuration(person.mergeSeconds)} of transcribed speech) become ${speakerName(target.id, target.name)}'s. Individual speaker overrides stay unchanged. You can undo this.`),
+      target && h('p', { className: 'mn-faint' }, `${person.mergeSegments} ${person.mergeSegments === 1 ? 'turn' : 'turns'} (${spokenDuration(person.mergeSeconds)} of transcribed speech) become ${speakerName(target.id, target.name)}'s, including turns you moved to this speaker. You can undo this.`),
       h('div', { className: 'mn-row' },
         h(Button, { type: 'submit', size: 'xs', disabled: busy || !into }, 'Merge'),
         btn({ variant: 'ghost', size: 'xs', onClick: () => setMode(null) }, 'Cancel'))))

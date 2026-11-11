@@ -10,8 +10,7 @@ provides_tools:
   - meeting_save_notes
   - meeting_list
   - meeting_get
-  - meeting_correct
-  - meeting_retry_transcription
+  - meeting_rename_speaker
   - meeting_actions
   - meeting_save_actions
   - meeting_action_callback

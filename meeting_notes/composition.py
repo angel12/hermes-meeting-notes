@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import math
+import subprocess
 import wave
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -40,13 +41,33 @@ def _combine(svc, request_id, title, date, timezone, sources, own_audio):
     if len({s['id'] for s in sources}) != len(sources):
         raise ValueError('A recording can only appear once')
     request_hash = hashlib.sha256(json.dumps([title,date,timezone,sources] + ([True] if own_audio else []),sort_keys=True).encode()).hexdigest()
-    with svc.db() as db:
-        db.execute('BEGIN IMMEDIATE')
+    def replay(db):
         previous = db.execute('SELECT * FROM compositions WHERE request_id=?',(request_id,)).fetchone()
         if previous:
             if previous['request_hash'] != request_hash:
                 raise ValueError('This request ID was already used for a different combination')
             return {'id':previous['meeting']}
+    with svc.db() as db:
+        if (result := replay(db)):
+            return result
+        paths = {}
+        for source in sources:
+            try:
+                paths[source['id']] = storage.playback_path(svc, db, source['id'])
+            except ValueError:
+                paths[source['id']] = None
+    # Probing up to 20 recordings (ffprobe for FLAC) can be slow on external
+    # storage. Do it before the write lock; the lock rechecks the paths.
+    probed = {}
+    for ident, path in paths.items():
+        try:
+            probed[ident] = (path, audio_files.pcm_info(path)) if path else None
+        except (OSError, ValueError, wave.Error, EOFError, subprocess.SubprocessError, KeyError, IndexError):
+            probed[ident] = None
+    with svc.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if (result := replay(db)):
+            return result
         meeting, transcript = uid(), uid()
         segments, parts = [], []
         frames, label_count = 0, 0
@@ -59,10 +80,11 @@ def _combine(svc, request_id, title, date, timezone, sources, own_audio):
             if m['active'] != source['active'] or m['revision'] != source['revision']:
                 raise ValueError('A source transcript changed; refresh the selection before combining')
             path = storage.playback_path(svc, db, m['id'])
-            try:
-                count = audio_files.pcm_info(path)
-            except (OSError, wave.Error, EOFError):
-                raise ValueError('A source recording is not available for playback') from None
+            if probed.get(m['id']) is None:
+                raise ValueError('A source recording is not available for playback')
+            if probed[m['id']][0] != path:
+                raise ValueError('A source recording moved; refresh the selection before combining')
+            count = probed[m['id']][1]
             original = json.loads(db.execute('SELECT segments FROM transcripts WHERE id=?',(m['active'],)).fetchone()[0])
             corrections = [dict(c) for c in db.execute('SELECT * FROM corrections WHERE transcript=? ORDER BY revision',(m['active'],))]
             corrected = effective(original,corrections)
