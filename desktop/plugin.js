@@ -7,125 +7,182 @@ const STYLE_ID = 'hermes-meeting-notes-styles'
 const POLL_MS = 3000
 const MAX_UPLOAD = 512 * 1024 * 1024
 const UPLOAD_TIMEOUT_MS = 120000
-const PLAY_WINDOW_MAX = 30
 
 // Disk plugins are not scanned by Tailwind. Every rule is scoped under .mn and
 // uses only host theme variables, so light/dark and custom skins follow the app.
 export const CSS = `
-.mn{--mn-gap:16px;--mn-line:var(--ui-stroke-tertiary,var(--ui-stroke-secondary));--mn-soft:var(--ui-bg-quaternary,transparent);display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);height:100%;min-height:0;color:var(--ui-text-primary);font-size:13px;line-height:1.5}
+.mn{--mn-gap:16px;--mn-line:var(--ui-stroke-tertiary,var(--ui-stroke-secondary));--mn-soft:var(--ui-bg-quaternary,transparent);--mn-mono:var(--font-mono,ui-monospace,monospace);display:grid;grid-template-columns:minmax(220px,272px) minmax(0,1fr);height:100%;min-height:0;color:var(--ui-text-primary);font-size:13px;line-height:1.5}
 .mn *{box-sizing:border-box}
 .mn :focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
 .mn h1,.mn h2,.mn h3,.mn h4,.mn p{margin:0}
-.mn-side{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--mn-line)}
-.mn-side-head{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:16px 12px 8px 16px}
-.mn-side-head>button{width:100%;min-width:0;white-space:normal;height:auto;min-height:28px}
-.mn-side-head h1{font-size:14px;font-weight:600}
-.mn-list{list-style:none;margin:0;padding:4px 8px;overflow:auto;flex:1;min-height:0}
-.mn-list li{margin:0 0 2px}
-.mn-item{display:grid;gap:2px;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.mn svg{flex:none}
+.mn-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ui-text-secondary);cursor:pointer;font:inherit}
+.mn-icon-btn:hover:not(:disabled){background:var(--ui-control-hover-background,var(--mn-soft));color:var(--ui-text-primary)}
+.mn-icon-btn:disabled{opacity:.45;cursor:default}
+.mn-icon-btn[aria-current=page],.mn-icon-btn[aria-expanded=true]{background:var(--ui-control-active-background,var(--mn-soft));color:var(--ui-text-primary)}
+.mn-icon-btn-lg{width:32px;height:32px;border:1px solid var(--mn-line)}
+.mn-side{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--mn-line);background:var(--ui-bg-sidebar,transparent)}
+.mn-side-head{display:grid;gap:10px;padding:14px 12px 10px}
+.mn-side-title{display:flex;align-items:center;gap:6px;padding-left:4px}
+.mn-side-title h1{flex:1;font-size:14px;font-weight:600}
+.mn-side-actions{display:flex;gap:6px}
+.mn-side-actions>button:first-child{flex:1;min-width:0}
+.mn-filter-box{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:1px solid var(--mn-line);border-radius:6px;background:var(--ui-bg-input,transparent);color:var(--ui-text-tertiary)}
+.mn-filter-box:focus-within{border-color:var(--ui-accent)}
+.mn-filter-box input{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:12.5px;color:var(--ui-text-primary)}
+.mn-list{list-style:none;margin:0;padding:0 8px 8px;overflow:auto;flex:1;min-height:0}
+.mn-list li{margin:0 0 1px}
+.mn-group{padding:12px 10px 4px;font-size:11px;font-weight:500;color:var(--ui-text-tertiary)}
+.mn-item{display:grid;gap:1px;width:100%;text-align:left;padding:7px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .mn-item:disabled{opacity:.6;cursor:default}
 .mn-item:hover:not(:disabled){background:var(--ui-row-hover-background,var(--mn-soft))}
 .mn-item[aria-current=true]{background:var(--ui-row-active-background,var(--mn-soft))}
 .mn-item-title{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mn-item-meta{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ui-text-tertiary)}
+.mn-state{display:inline-flex;align-items:center;gap:5px}
+.mn-state::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--mn-c,var(--ui-text-tertiary))}
+.mn-state[data-tone=default]{--mn-c:var(--ui-accent)}
+.mn-state[data-tone=warn]{--mn-c:var(--ui-yellow)}
+.mn-state[data-tone=destructive]{--mn-c:var(--ui-red)}
 .mn-side-foot{display:grid;gap:6px;padding:10px 12px 14px;border-top:1px solid var(--mn-line)}
 .mn-main{min-width:0;min-height:0;overflow:auto;container-type:inline-size}
 .mn-page{max-width:1180px;margin:0 auto;padding:24px 28px 48px;display:grid;gap:var(--mn-gap)}
+.mn-narrow{max-width:680px}
 .mn-muted{color:var(--ui-text-secondary)}
 .mn-faint{color:var(--ui-text-tertiary);font-size:12px}
-.mn-header{display:grid;gap:6px}
-.mn-header h2{font-size:20px;font-weight:600;line-height:1.3;overflow-wrap:anywhere;min-width:0;flex:1}
-.mn-title-row{display:flex;align-items:center;gap:12px}
+.mn-header{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px 12px}
+.mn-header-text{display:grid;gap:4px;flex:1 1 320px;min-width:0}
+.mn-header h2{font-size:20px;font-weight:600;line-height:1.3;overflow-wrap:anywhere;min-width:0}
+.mn-title-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.mn-header-actions{display:flex;align-items:center;gap:6px}
 .mn-nowrap{white-space:nowrap;font-variant-numeric:tabular-nums}
 .mn-grow{flex:1}
-.mn-facts{display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--ui-text-secondary);font-size:12.5px}
+.mn-facts{display:flex;flex-wrap:wrap;gap:2px 0;color:var(--ui-text-secondary);font-size:12.5px}
+.mn-facts>span+span::before{content:'·';padding:0 8px;color:var(--ui-text-tertiary)}
 .mn-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.mn-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .mn-spread{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
-.mn-card{border:1px solid var(--mn-line);border-radius:8px;padding:14px 16px;background:var(--ui-bg-card,transparent);display:grid;gap:10px}
-.mn-callout{border-radius:6px;padding:10px 12px;border:1px solid var(--mn-line);border-left-width:3px;display:grid;gap:6px}
-.mn-callout[data-tone=warn]{border-left-color:var(--ui-yellow,var(--ui-accent))}
-.mn-callout[data-tone=error]{border-left-color:var(--ui-red,var(--ui-accent))}
-.mn-callout[data-tone=info]{border-left-color:var(--ui-accent)}
-.mn-callout[data-tone=ok]{border-left-color:var(--ui-green,var(--ui-accent))}
+.mn-card{border:1px solid var(--mn-line);border-radius:10px;padding:14px 16px;background:var(--ui-bg-card,transparent);display:grid;gap:10px}
+.mn-card>summary{cursor:pointer;font-weight:500}
+.mn-callout{--mn-c:var(--ui-accent);border-radius:8px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--mn-c) 35%,transparent);background:color-mix(in srgb,var(--mn-c) 8%,transparent);display:grid;gap:4px}
+.mn-callout[data-tone=warn]{--mn-c:var(--ui-yellow,var(--ui-accent))}
+.mn-callout[data-tone=error]{--mn-c:var(--ui-red,var(--ui-accent))}
+.mn-callout[data-tone=ok]{--mn-c:var(--ui-green,var(--ui-accent))}
 .mn-callout strong{font-weight:600}
 .mn-field{display:grid;gap:4px;min-width:0}
 .mn-field>label{font-weight:500;font-size:12.5px}
 .mn-field small{color:var(--ui-text-tertiary);font-size:11.5px}
-.mn-input{font:inherit;color:inherit;background:transparent;border:1px solid var(--ui-stroke-secondary);border-radius:5px;padding:6px 8px;width:100%;min-width:0}
+.mn-input{font:inherit;color:inherit;background:var(--ui-bg-input,transparent);border:1px solid var(--ui-stroke-secondary);border-radius:6px;padding:6px 8px;width:100%;min-width:0}
 .mn-input:disabled{opacity:.6}
 textarea.mn-input{resize:vertical;min-height:64px;line-height:1.5}
 select.mn-input{padding-right:24px}
 .mn-input[aria-invalid=true]{border-color:var(--ui-red,var(--ui-accent))}
 .mn-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
 .mn-file{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
-.mn-progress{width:100%;height:8px;accent-color:var(--ui-accent)}
-.mn-tabs{display:flex;gap:2px;border-bottom:1px solid var(--mn-line);overflow-x:auto}
-.mn-tab{font:inherit;color:var(--ui-text-secondary);background:transparent;border:0;border-bottom:2px solid transparent;padding:8px 12px;margin-bottom:-1px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.mn-drop{display:grid;justify-items:center;gap:6px;padding:24px 16px;border:1.5px dashed var(--ui-stroke-secondary);border-radius:12px;background:var(--mn-soft);text-align:center}
+.mn-drop[data-over=true]{border-color:var(--ui-accent);background:color-mix(in srgb,var(--ui-accent) 8%,transparent)}
+.mn-drop .mn-input{border:0;background:transparent;width:auto;max-width:100%;padding:0;text-align:center}
+.mn-drop input[type=file]::file-selector-button{font:inherit;font-size:12.5px;color:var(--ui-text-primary);background:var(--ui-bg-primary);border:1px solid var(--ui-stroke-secondary);border-radius:6px;padding:4px 10px;margin-right:8px;cursor:pointer}
+.mn-drop-icon{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;border:1px solid var(--mn-line);background:var(--ui-bg-primary,transparent);color:var(--ui-text-secondary)}
+.mn-progress{width:100%;height:6px;accent-color:var(--ui-accent)}
+.mn-tabs{display:flex;gap:4px;border-bottom:1px solid var(--mn-line);overflow-x:auto}
+.mn-tab{font:inherit;color:var(--ui-text-secondary);background:transparent;border:0;border-bottom:2px solid transparent;padding:9px 12px;margin-bottom:-1px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .mn-tab:hover{color:var(--ui-text-primary)}
-.mn-tab[aria-selected=true]{color:var(--ui-text-primary);border-bottom-color:var(--ui-accent);font-weight:500}
-.mn-count{font-size:11px;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
-.mn-player{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:8px 12px;border:1px solid var(--mn-line);border-radius:8px;background:var(--ui-bg-elevated,var(--ui-bg-card,transparent));backdrop-filter:blur(8px)}
-.mn-player audio{height:32px;flex:1 1 240px;min-width:0}
-.mn-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--mn-line)}
-.mn-toolbar .mn-field{flex:1 1 180px}
-.mn-input-sm{padding:4px 8px;font-size:12.5px}
+.mn-tab[aria-selected=true]{color:var(--ui-text-primary);border-bottom-color:var(--ui-text-primary);font-weight:500}
+.mn-count{font-size:11px;font-weight:400;color:var(--ui-text-tertiary);font-variant-numeric:tabular-nums}
+.mn-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.mn-toolbar .mn-field{flex:0 1 340px}
+.mn-toolbar>label{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ui-text-secondary)}
+.mn-input-sm{padding:4px 8px;font-size:12.5px;height:30px}
 .mn-search{flex:1 1 200px;width:auto}
 .mn-filter{flex:0 1 180px;width:auto}
-.mn-editor{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:24px;align-items:start}
+.mn-editor{display:grid;grid-template-columns:minmax(0,1fr) 284px;gap:24px;align-items:start}
 .mn-editor-main{display:grid;gap:8px;min-width:0}
-.mn-panel{position:sticky;top:12px;display:grid;gap:10px;align-content:start;max-height:calc(100vh - 140px);overflow:auto;padding:12px;border:1px solid var(--mn-line);border-radius:8px;background:var(--ui-bg-card,transparent)}
-.mn-panel-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--ui-text-secondary)}
+.mn-panel{position:sticky;top:12px;display:grid;gap:12px;align-content:start;max-height:calc(100vh - 140px);overflow:auto;padding:12px;border:1px solid var(--mn-line);border-radius:10px;background:var(--ui-bg-card,transparent)}
+.mn-panel-title{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
 .mn-spk-list{list-style:none;margin:0;padding:0;display:grid;gap:2px}
-.mn-spk{display:grid;gap:6px;padding:6px;border-radius:6px}
+.mn-spk{display:grid;gap:6px;padding:6px;border-radius:7px}
 .mn-spk:hover{background:var(--ui-row-hover-background,var(--mn-soft))}
-.mn-spk-main{display:flex;align-items:flex-start;gap:8px}
+.mn-spk-main{display:flex;align-items:center;gap:8px}
 .mn-spk-name{display:grid;gap:1px;min-width:0;flex:1}
-.mn-spk-tools{display:flex;gap:0;flex:none}
+.mn-spk-tools{display:flex;gap:0;flex:none;opacity:.7}
+.mn-spk:hover .mn-spk-tools,.mn-spk:focus-within .mn-spk-tools{opacity:1}
+.mn-spk-stats{display:flex;align-items:center;gap:8px;padding-left:18px}
+.mn-bar{flex:1;height:4px;border-radius:2px;background:var(--mn-soft);overflow:hidden}
+.mn-bar>span{display:block;height:100%;background:var(--mn-c,var(--ui-accent))}
 .mn-name-btn{font:inherit;font-weight:600;color:inherit;background:transparent;border:0;padding:0;text-align:left;cursor:text;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mn-name-btn:hover:not(:disabled){text-decoration:underline}
-.mn-dot-lg{width:11px;height:11px;margin-top:4px}
+.mn-dot-lg{width:10px;height:10px}
 .mn-merge{display:grid;gap:6px;padding:8px;border-radius:6px;background:var(--mn-soft)}
 .mn .mn-drawer-only{display:none}
-.mn-chip{font:inherit;font-size:12.5px;font-weight:600;color:inherit;display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:0;border-radius:999px;background:transparent;cursor:pointer}
+.mn-chip{font:inherit;font-size:12.5px;font-weight:600;color:inherit;display:inline-flex;align-items:center;gap:6px;margin-left:-6px;padding:1px 6px;border:0;border-radius:999px;background:transparent;cursor:pointer}
 .mn-chip:hover:not(:disabled){background:var(--ui-row-hover-background,var(--mn-soft))}
 .mn-chip[aria-pressed=true]{background:var(--ui-row-active-background,var(--mn-soft))}
+.mn-chip[data-cont=true]{opacity:.55}
+.mn-chip[data-cont=true]:hover,.mn-chip[data-cont=true]:focus-visible{opacity:1}
 .mn-picker{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:4px;border-radius:6px;background:var(--mn-soft)}
 .mn-inline-edit{display:grid;gap:6px}
-.mn-transcript{list-style:none;margin:0;padding:8px;max-height:60vh;min-height:240px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--mn-line);border-radius:8px}
-.mn-meeting-player{position:sticky;top:0;z-index:3;background:var(--ui-bg-elevated,var(--ui-bg-card));padding:12px}
-.mn-wave{height:80px;cursor:crosshair;color:var(--ui-text-secondary)}
-.mn-wave svg{width:100%;height:100%}
-.mn-player-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.mn-player-controls input[type=range]{flex:1;min-width:100px}
-.mn-seg{display:grid;gap:4px;padding:10px 8px;border-radius:6px;scroll-margin-top:64px}
+.mn-transcript{list-style:none;margin:0;padding:4px;max-height:60vh;min-height:240px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--mn-line);border-radius:10px}
+.mn-meeting-player{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--mn-line);border-radius:10px;background:var(--ui-bg-elevated,var(--ui-bg-card));box-shadow:0 4px 14px -10px color-mix(in srgb,var(--ui-text-primary) 30%,transparent)}
+.mn-meeting-player>[role=alert],.mn-meeting-player>.mn-faint{flex-basis:100%}
+.mn-meeting-player{flex-wrap:wrap}
+.mn-play{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;flex:none;border:0;border-radius:50%;background:var(--ui-text-primary);color:var(--ui-bg-primary);cursor:pointer}
+.mn-play:disabled{opacity:.4;cursor:default}
+.mn-play:hover:not(:disabled){opacity:.85}
+.mn-scrub{flex:1 1 240px;min-width:120px;display:grid;gap:4px}
+.mn-wave{position:relative;height:44px;color:var(--ui-text-quaternary,var(--ui-text-tertiary))}
+.mn-wave svg{display:block;width:100%;height:100%}
+.mn-wave input[type=range]{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.mn-wave:focus-within{outline:2px solid var(--ui-accent);outline-offset:3px;border-radius:4px}
+.mn-lanes{display:block;width:100%;height:4px;border-radius:2px;background:var(--mn-soft);overflow:hidden}
+.mn-clock{font-family:var(--mn-mono);font-size:12px;color:var(--ui-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.mn-speed{height:28px;padding:0 4px;border:1px solid var(--mn-line);border-radius:6px;background:var(--ui-bg-input,transparent);color:inherit;font:inherit;font-size:12px}
+.mn-seg{position:relative;display:grid;grid-template-columns:60px minmax(0,1fr);column-gap:10px;padding:6px 8px;border-radius:7px;scroll-margin-top:64px}
+.mn-seg[data-cont=true]{padding-top:0}
 .mn-seg:hover{background:var(--ui-row-hover-background,transparent)}
 .mn-seg[data-active=true]{background:var(--ui-selection-background,var(--mn-soft))}
 .mn-seg[data-flash=true]{background:var(--ui-row-active-background,var(--mn-soft))}
-.mn-time{font:inherit;font-family:var(--font-mono,ui-monospace,monospace);font-size:11.5px;color:var(--ui-text-tertiary);background:transparent;border:0;padding:2px 4px;border-radius:4px;cursor:pointer;font-variant-numeric:tabular-nums}
+.mn-seg-time{display:flex;flex-wrap:wrap;align-content:flex-start;align-items:center;gap:0 2px}
+.mn-seg-time .mn-chip{margin-left:0;padding:4px}
+.mn-seg[data-cont=true] .mn-seg-head{position:absolute;right:8px;top:0}
+.mn-time{font:inherit;font-family:var(--mn-mono);font-size:11.5px;line-height:1.65;color:var(--ui-text-tertiary);background:transparent;border:0;padding:1px 4px;margin-left:-4px;border-radius:4px;cursor:pointer;font-variant-numeric:tabular-nums}
 .mn-time:hover{color:var(--ui-accent)}
-.mn-seg-body{display:grid;gap:4px;min-width:0}
-.mn-seg-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-.mn-seg-text{overflow-wrap:anywhere;white-space:pre-wrap;line-height:1.65;padding-left:8px}
+.mn-seg[data-active=true] .mn-time{color:var(--ui-accent)}
+.mn-part{font-size:10.5px;color:var(--ui-text-tertiary);padding-left:0}
+.mn-seg-body{display:grid;gap:2px;min-width:0}
+.mn-seg-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:22px}
+.mn-seg[data-cont=true] .mn-seg-head{min-height:0}
+.mn-seg-text{overflow-wrap:anywhere;white-space:pre-wrap;line-height:1.65}
 .mn-seg-actions{display:flex;gap:4px;margin-left:auto;opacity:0}
 .mn-seg:hover .mn-seg-actions,.mn-seg:focus-within .mn-seg-actions{opacity:1}
 @media (hover:none){.mn .mn-seg-actions{opacity:1}}
+.mn-mark{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--ui-text-tertiary)}
 .mn-who{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px}
-.mn-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--mn-c,var(--ui-accent))}
+.mn-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--mn-c,var(--ui-accent))}
 .mn-history{list-style:none;margin:0;padding:0;display:grid}
-.mn-history li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--mn-line);font-size:12px}
+.mn-history li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--mn-line);font-size:12px}
 .mn-history li[data-undone=true] .mn-history-text{text-decoration:line-through;color:var(--ui-text-tertiary)}
 .mn-section{display:grid;gap:8px}
-.mn-section h3{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--ui-text-secondary);display:flex;align-items:center;gap:8px}
-.mn-note{display:grid;gap:8px;padding:12px 0;border-bottom:1px solid var(--mn-line)}
+.mn-section h3,.mn-notes h3{font-size:15px;font-weight:600;display:flex;align-items:baseline;gap:8px}
+.mn-notes{display:grid;gap:28px;max-width:760px}
+.mn-notes-section{display:grid;gap:2px;scroll-margin-top:72px}
+.mn-note{display:grid;gap:8px;padding:10px 0;border-bottom:1px solid var(--mn-line)}
 .mn-note:last-child{border-bottom:0}
-.mn-note-text{font-size:13.5px;overflow-wrap:anywhere}
-.mn-attrs{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;font-size:12.5px;margin:0}
+.mn-note-text{font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+.mn-attrs{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12.5px;margin:0}
+.mn-attrs>div{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .mn-attrs dt{color:var(--ui-text-tertiary)}
 .mn-attrs dd{margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-.mn-cite{display:grid;gap:4px;padding:8px 10px;border-radius:6px;background:var(--mn-soft)}
-.mn-cite blockquote{margin:0;overflow-wrap:anywhere}
-.mn-cite-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:12px;color:var(--ui-text-tertiary)}
+.mn-cite{display:grid;gap:2px;padding:6px 10px;border-radius:8px;background:var(--mn-soft)}
+.mn-cite blockquote{margin:0;overflow-wrap:anywhere;font-style:italic;color:var(--ui-text-secondary)}
+.mn-cite-meta{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;font-size:12px;color:var(--ui-text-tertiary)}
 .mn-jump{display:flex;flex-wrap:wrap;gap:6px}
+.mn-jump a{display:inline-flex;gap:6px;padding:3px 10px;border:1px solid var(--mn-line);border-radius:999px;color:var(--ui-text-secondary);text-decoration:none;font-size:12px}
+.mn-jump a:hover{color:var(--ui-text-primary);background:var(--ui-row-hover-background,var(--mn-soft))}
+.mn-details{border-top:1px solid var(--mn-line);padding-top:12px;margin-top:8px}
+.mn-details>summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--ui-text-secondary);padding:4px 0}
+.mn-details[open]>summary{color:var(--ui-text-primary);margin-bottom:12px}
+.mn-details-body{display:grid;gap:12px}
 .mn-empty{display:grid;gap:10px;justify-items:start;padding:28px 4px}
 .mn-empty h2{font-size:18px;font-weight:600}
 .mn-steps{margin:0;padding-left:20px;display:grid;gap:4px;color:var(--ui-text-secondary)}
@@ -339,6 +396,31 @@ async function sha256Hex(bytes) {
 
 const btn = (props, ...children) => h(Button, { type: 'button', size: 'sm', variant: 'outline', ...props }, ...children)
 
+// Inline stroke icons (no icon dependency). Decorative: the control carries the name.
+const ICONS = {
+  gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
+  plus: 'M12 5v14M5 12h14',
+  combine: 'M4 6h7v5H4zM13 13h7v5h-7zM11 8.5h4a2 2 0 0 1 2 2V13',
+  search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-3.5-3.5',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  next: 'M6 9l6 6 6-6',
+  undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
+  pencil: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z',
+  info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
+  merge: 'M8 6v6a4 4 0 0 0 4 4h6M15 13l3 3-3 3M8 3v3',
+  upload: 'M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3',
+  speaker: 'M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2'
+}
+const FILLED = { play: 'M8 5v14l11-7z', pause: 'M6 5h4v14H6zM14 5h4v14h-4z', stop: 'M7 7h10v10H7z' }
+function icon(name, size = 14) {
+  const filled = FILLED[name]
+  return h('svg', { width: size, height: size, viewBox: '0 0 24 24', 'aria-hidden': true, focusable: 'false',
+    fill: filled ? 'currentColor' : 'none', stroke: filled ? 'none' : 'currentColor', strokeWidth: name === 'more' ? 3 : 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+  h('path', { d: filled || ICONS[name] }))
+}
+const iconBtn = ({ name, label, className = '', ...props }) =>
+  h('button', { type: 'button', className: `mn-icon-btn ${className}`.trim(), 'aria-label': label, title: label, ...props }, icon(name))
+
 function Callout({ tone = 'info', title, children, role }) {
   return h('div', { className: 'mn-callout', 'data-tone': tone, role },
     title && h('strong', null, title),
@@ -367,23 +449,40 @@ function Field({ label, hint, children }) {
 
 function Sidebar({ meetings, loaded, selectedId, view, onSelect, onNew, onCombine, onSettings, onStartQueued, busy, locked }) {
   const queued = meetings.some(m => ['queued', 'preparing', 'in_flight'].includes(m.state))
+  const [filter, setFilter] = useState('')
+  const q = filter.trim().toLowerCase()
+  const shown = q ? meetings.filter(m => m.title.toLowerCase().includes(q)) : meetings
+  // Month headings, in the list's existing order.
+  const rows = []
+  let group = null
+  for (const m of shown) {
+    const label = formatMeetingDate(m.date, m.timezone, { month: 'long', year: 'numeric' })
+    if (label !== group) { group = label; rows.push(h('li', { key: `g:${label}`, className: 'mn-group', role: 'presentation' }, label)) }
+    rows.push(h('li', { key: m.id },
+      h('button', { type: 'button', className: 'mn-item', disabled: locked, 'aria-current': view === 'meeting' && m.id === selectedId ? 'true' : undefined, onClick: () => onSelect(m.id) },
+        h('span', { className: 'mn-item-title' }, m.title),
+        h('span', { className: 'mn-item-meta' },
+          h('span', null, formatMeetingDate(m.date, m.timezone, { dateStyle: 'medium' })),
+          m.state !== 'completed' && h('span', { className: 'mn-state', 'data-tone': stateInfo(m.state).tone }, stateInfo(m.state).label)))))
+  }
   return h('nav', { className: 'mn-side', 'aria-label': 'Meetings' },
     h('div', { className: 'mn-side-head' },
-      h('h1', null, 'Meeting Notes'),
-      btn({ variant: 'default', onClick: onNew, disabled: locked, 'aria-current': view === 'upload' ? 'page' : undefined }, 'New recording'),
-      btn({ onClick: onCombine, disabled: locked, 'aria-current': view === 'combine' ? 'page' : undefined }, 'Combine meetings')),
+      h('div', { className: 'mn-side-title' },
+        h('h1', null, 'Meeting Notes'),
+        iconBtn({ name: 'gear', label: 'Transcription settings', onClick: onSettings, disabled: locked, 'aria-current': view === 'settings' ? 'page' : undefined })),
+      h('div', { className: 'mn-side-actions' },
+        btn({ variant: 'default', onClick: onNew, disabled: locked, 'aria-current': view === 'upload' ? 'page' : undefined }, icon('plus'), 'New recording'),
+        iconBtn({ name: 'combine', label: 'Combine meetings', className: 'mn-icon-btn-lg', onClick: onCombine, disabled: locked, 'aria-current': view === 'combine' ? 'page' : undefined })),
+      meetings.length > 5 && h('label', { className: 'mn-filter-box' }, icon('search'),
+        h('span', { className: 'mn-sr' }, 'Filter meetings'),
+        h('input', { type: 'search', value: filter, placeholder: 'Filter meetings', onChange: e => setFilter(e.target.value) }))),
     !loaded ? h('div', { className: 'mn-list', 'aria-busy': true },
       h('p', { className: 'mn-faint', style: { padding: '8px 10px' } }, 'Loading meetings…'))
       : meetings.length === 0 ? h('p', { className: 'mn-faint', style: { padding: '8px 16px' } }, 'No meetings yet.')
-        : h('ul', { className: 'mn-list' }, ...meetings.map(m => h('li', { key: m.id },
-          h('button', { type: 'button', className: 'mn-item', disabled: locked, 'aria-current': view === 'meeting' && m.id === selectedId ? 'true' : undefined, onClick: () => onSelect(m.id) },
-            h('span', { className: 'mn-item-title' }, m.title),
-            h('span', { className: 'mn-item-meta' },
-              h('span', null, formatMeetingDate(m.date, m.timezone, { dateStyle: 'medium' })),
-              m.state !== 'completed' && h(StateBadge, { state: m.state })))))),
-    h('div', { className: 'mn-side-foot' },
-      queued && btn({ onClick: onStartQueued, disabled: busy || locked }, 'Start queued work'),
-      btn({ variant: 'ghost', onClick: onSettings, disabled: locked, 'aria-current': view === 'settings' ? 'page' : undefined }, 'Transcription settings')))
+        : shown.length === 0 ? h('p', { className: 'mn-faint', style: { padding: '8px 16px' } }, 'No meetings match.')
+          : h('ul', { className: 'mn-list' }, ...rows),
+    queued && h('div', { className: 'mn-side-foot' },
+      btn({ onClick: onStartQueued, disabled: busy || locked }, 'Start queued work')))
 }
 
 // ── Upload ───────────────────────────────────────────────────────────────────
@@ -438,7 +537,7 @@ export function CombineForm({ meetings, rest, onCreated, onBusy }) {
     } catch (e) { setError(errorText(e)) }
     finally { setBusy(false); onBusy(false) }
   }
-  return h('form', { className: 'mn-page mn-section', onSubmit: submit },
+  return h('form', { className: 'mn-page mn-narrow mn-section', onSubmit: submit },
     h('h2', null, 'Combine transcribed recordings'),
     h('p', { className: 'mn-muted' }, 'Create one meeting from recordings split by your recorder. Originals and their notes stay intact. No audio is sent for transcription.'),
     h(Field, { label: 'Add recording in playback order' },
@@ -468,6 +567,7 @@ export function UploadForm({ rest, onUploaded, onBusy }) {
   const [when, setWhen] = useState(() => localInputValue())
   const [file, setFile] = useState(null)
   const [phase, setPhase] = useState('idle') // idle | uploading | finalizing
+  const [over, setOver] = useState(false)
   const [progress, setProgress] = useState(null)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
@@ -515,24 +615,34 @@ export function UploadForm({ rest, onUploaded, onBusy }) {
     }
   }
 
-  return h('div', { className: 'mn-page' },
-    h('header', { className: 'mn-header' },
+  const choose = chosen => { setFile(chosen); setProgress(null); setError(''); setStatus('') }
+  const drop = e => {
+    e.preventDefault(); setOver(false)
+    if (working || !e.dataTransfer?.files?.length) return
+    // Keep the input as the source of truth: submit reads its live FileList.
+    try { if (picker.current) picker.current.files = e.dataTransfer.files } catch {}
+    choose(e.dataTransfer.files[0])
+  }
+  return h('div', { className: 'mn-page mn-narrow' },
+    h('header', { className: 'mn-header-text' },
       h('h2', null, 'New recording'),
-      h('p', { className: 'mn-muted' }, 'Upload an audio file to transcribe it with speaker separation. The original file is kept unchanged on this Hermes host; transcription sends the audio to the server set in Transcription settings.')),
-    h('form', { className: 'mn-card', onSubmit: submit, noValidate: true, 'aria-label': 'Upload a recording' },
+      h('p', { className: 'mn-muted' }, 'Transcribed with separate speakers by the server in Transcription settings. The original file stays unchanged on this Hermes host.')),
+    h('form', { className: 'mn-section', style: { gap: 14 }, onSubmit: submit, noValidate: true, 'aria-label': 'Upload a recording' },
+      h('div', { className: 'mn-drop', 'data-over': over ? 'true' : undefined,
+        onDragOver: e => { e.preventDefault(); if (!working) setOver(true) }, onDragLeave: () => setOver(false), onDrop: drop },
+        h('span', { className: 'mn-drop-icon', 'aria-hidden': true }, icon(file ? 'speaker' : 'upload', 18)),
+        h(Field, { label: 'Recording', hint: file ? `Selected: ${file.name} · ${fileSize(file.size)}. Choosing a file does not start the upload.` : 'Drop an audio file here or choose one. Up to 512 MB.' },
+          h('input', { ref: picker, className: 'mn-input', type: 'file', accept: 'audio/*,.wav,.WAV', disabled: working,
+            onChange: e => choose(e.currentTarget.files?.[0] || null) }))),
       h(Field, { label: 'Meeting title' },
         h('input', { className: 'mn-input', value: title, maxLength: 300, required: true, disabled: working, autoComplete: 'off', placeholder: 'Weekly planning',
           'aria-invalid': error === 'Enter a meeting title.' ? 'true' : undefined, onChange: e => setTitle(e.target.value) })),
       h(Field, { label: 'Meeting date and time', hint: iso ? `Saved as ${iso} (${zone}). Relative dates in notes are read against this.` : 'Choose a date and time.' },
         h('input', { className: 'mn-input', type: 'datetime-local', value: when, required: true, disabled: working, onChange: e => setWhen(e.target.value),
           'aria-invalid': !iso ? 'true' : undefined })),
-      h(Field, { label: 'Recording', hint: 'Audio file up to 512 MB. Choosing a file does not start the upload.' },
-        h('input', { ref: picker, className: 'mn-input', type: 'file', accept: 'audio/*,.wav,.WAV', disabled: working,
-          onChange: e => { const chosen = e.currentTarget.files?.[0] || null; setFile(chosen); setProgress(null); setError(''); setStatus('') } })),
-      file && !working && h('p', { className: 'mn-faint' }, `Selected: ${file.name} · ${fileSize(file.size)}`),
-      h('div', { className: 'mn-row' },
-        h(Button, { type: 'submit', size: 'sm', disabled: working }, working ? 'Uploading…' : 'Upload and transcribe')),
       progress !== null && h('progress', { className: 'mn-progress', max: 100, value: progress, 'aria-label': 'Upload progress', 'aria-valuetext': `${progress}%` }),
+      h('div', { className: 'mn-row' },
+        h(Button, { type: 'submit', size: 'sm', disabled: working }, working ? `Uploading…${progress !== null ? ` ${progress}%` : ''}` : 'Upload and transcribe')),
       h('p', { role: 'status', 'aria-live': 'polite', className: 'mn-muted' }, status ? `${status}${progress !== null && phase === 'uploading' ? ` ${progress}% uploaded.` : ''}` : ''),
       error && h(Callout, { tone: 'error', role: 'alert' }, error)),
     h('p', { className: 'mn-faint' }, 'Uploading the same audio again opens the existing meeting instead of transcribing it twice. Transcription continues on the host if you close this page; stopping the Hermes backend can interrupt it.'))
@@ -839,7 +949,9 @@ export function SettingsForm({ rest }) {
 
 // ── Meeting workspace ────────────────────────────────────────────────────────
 
-export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspended, onStart }) {
+// One player for the whole meeting. Transcript turns seek it and keep playing;
+// note and action quotes pass `end`, which highlights the passage and stops there.
+export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, lanes = [] }) {
   const [timeline, setTimeline] = useState(null)
   const [peaks, setPeaks] = useState([])
   const [error, setError] = useState('')
@@ -848,17 +960,20 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
   const [running, setRunning] = useState(false)
   const [loading, setLoading] = useState(false)
   const [rate, setRate] = useState(1)
+  const [range, setRange] = useState(null)
   const audio = useRef(null), generation = useRef(0), url = useRef(null)
   const offset = useRef(0), length = useRef(0), next = useRef(null), desired = useRef(false)
-  const total = useRef(0), speed = useRef(1)
+  const total = useRef(0), speed = useRef(1), stopAt = useRef(null)
   const scrubTimer = useRef(null), scrubTarget = useRef(null), handledSeek = useRef(null)
-  const wavePath = useMemo(() => peaks.map((p,i) => `M${i*1200/peaks.length},${40-p*38}v${p*76}`).join(' '), [peaks])
+  const wavePath = useMemo(() => peaks.map((p,i) => `M${(i+.5)*1200/peaks.length},${22-p*20}v${Math.max(.5,p*40)}`).join(' '), [peaks])
+  const duration = timeline?.duration || 0
+  const x = t => duration ? Math.max(0, Math.min(1200, t / duration * 1200)) : 0
   const fetchWindow = start => rest(`/meetings/${meetingId}/audio?start=${start}&duration=30`, { timeoutMs: 120000 })
   const stop = () => { desired.current = false; audio.current?.pause(); setRunning(false) }
+  const clearRange = () => { stopAt.current = null; setRange(null) }
   const load = async (start, autoplay) => {
     const seq = ++generation.current
     desired.current = autoplay
-    if (autoplay) onStart?.()
     audio.current?.pause(); setRunning(false); setLoading(true); setError('')
     start = Math.max(0, Math.min(start, Math.max(0, total.current - .001)))
     try {
@@ -879,7 +994,7 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
       }
       if (generation.current !== seq) return
       const following = start + length.current
-      if (following < total.current) {
+      if (following < total.current && !(stopAt.current !== null && stopAt.current <= following)) {
         // One bounded look-ahead; catch immediately so a failed prefetch never
         // becomes an unhandled rejection. A boundary failure offers explicit retry.
         const promise = fetchWindow(following).then(value => ({value}), error => ({error}))
@@ -906,23 +1021,25 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
     }).catch(e => { if(live) setError(errorText(e)) })
     rest(`/meetings/${meetingId}/waveform`, {timeoutMs:120000}).then(data => {
       if(live) setPeaks(data.peaks || [])
-    }).catch(() => { if(live) setWaveError('Waveform unavailable. Playback and seeking remain available.') })
+    }).catch(() => { if(live) setWaveError('Waveform unavailable. Playback and seeking still work.') })
     return () => { clearTimeout(scrubTimer.current); live=false; generation.current++; desired.current=false; element?.pause(); if(url.current) URL.revokeObjectURL(url.current); url.current=null }
   }, [meetingId, rest])
-  useEffect(() => { if(suspended) stop() }, [suspended])
   useEffect(() => {
     if(seekRequest && timeline && handledSeek.current !== seekRequest) {
       handledSeek.current = seekRequest
       clearTimeout(scrubTimer.current); scrubTarget.current=null
+      const end = seekRequest.end > seekRequest.start ? seekRequest.end : null
+      stopAt.current = end
+      setRange(end === null ? null : { start: seekRequest.start, end })
       load(seekRequest.start, true)
     }
   }, [seekRequest, timeline])
   const toggle = async () => {
     if(loading) { generation.current++; setLoading(false); stop(); return }
     if(desired.current) { stop(); return }
+    if(range && position >= range.end - .05) clearRange()
     if(!url.current || position >= total.current) { load(position >= total.current ? 0 : position, true); return }
     desired.current=true
-    onStart?.()
     const seq = generation.current
     try { await audio.current.play() } catch { if(generation.current === seq) { stop(); setError('Audio could not start. Seek to retry.') } }
   }
@@ -933,40 +1050,46 @@ export function MeetingPlayer({ meetingId, rest, seekRequest, onPosition, suspen
     if(value !== null) load(value, desired.current)
   }
   const seek = value => {
+    clearRange()
     scrubTarget.current = Number(value); setPosition(Number(value))
     clearTimeout(scrubTimer.current)
     scrubTimer.current = setTimeout(commitSeek, 250)
   }
-  return h('section', {className:'mn-meeting-player mn-card', 'aria-label':'Meeting audio player'},
-    h('div', {className:'mn-wave', onClick:e => {
-      if(!timeline) return
-      const rect=e.currentTarget.getBoundingClientRect()
-      if(rect.width) seek((e.clientX-rect.left)/rect.width*timeline.duration)
-    }, 'aria-hidden':true},
-      h('svg', {viewBox:'0 0 1200 80', preserveAspectRatio:'none'},
-        h('line',{x1:0,x2:1200,y1:40,y2:40,stroke:'currentColor',strokeWidth:.5}),
-        h('path',{d:wavePath,stroke:'currentColor',fill:'none',strokeWidth:Math.max(1,1200/Math.max(1,peaks.length)*.7)}),
-        h('line',{x1:timeline?position/timeline.duration*1200:0,x2:timeline?position/timeline.duration*1200:0,y1:0,y2:80,stroke:'var(--ui-accent)',strokeWidth:3}))),
-    h('div',{className:'mn-player-controls'},
-      btn({onClick:toggle,disabled:!timeline,'aria-label':loading?'Cancel audio loading':running?'Pause meeting audio':'Play meeting audio'},loading?'Cancel buffering':running?'Pause':'Play'),
-      h('span',{className:'mn-nowrap'},`${clock(position)} / ${timeline?clock(timeline.duration):'…'}`),
-      h('input',{type:'range',min:0,max:timeline?.duration || 1,step:.1,value:position,disabled:!timeline,'aria-label':'Seek meeting audio',onChange:e=>seek(e.target.value),onPointerUp:commitSeek,onKeyUp:commitSeek,onBlur:commitSeek}),
-      h('select',{'aria-label':'Playback speed',value:rate,onChange:e=>{const v=Number(e.target.value);speed.current=v;setRate(v);if(audio.current)audio.current.playbackRate=v}},...[.75,1,1.25,1.5,2].map(v=>h('option',{key:v,value:v},`${v}×`)))),
+  const playedPath = useMemo(() => {
+    if (!peaks.length || !duration) return ''
+    const until = position / duration * peaks.length
+    return peaks.slice(0, Math.ceil(until)).map((p,i) => `M${(i+.5)*1200/peaks.length},${22-p*20}v${Math.max(.5,p*40)}`).join(' ')
+  }, [peaks, position, duration])
+  const barWidth = Math.max(1, 1200/Math.max(1,peaks.length)*.6)
+  const label = loading ? 'Cancel audio loading' : running ? 'Pause meeting audio' : 'Play meeting audio'
+  return h('section', {className:'mn-meeting-player', 'aria-label':'Meeting audio player'},
+    h('button', {type:'button', className:'mn-play', onClick:toggle, disabled:!timeline, 'aria-label':label, title:label},
+      icon(loading ? 'stop' : running ? 'pause' : 'play', 16)),
+    h('div', {className:'mn-scrub'},
+      h('div', {className:'mn-wave'},
+        h('svg', {viewBox:'0 0 1200 44', preserveAspectRatio:'none', 'aria-hidden':true},
+          range && h('rect', {x:x(range.start), width:Math.max(2, x(range.end)-x(range.start)), y:0, height:44, rx:3, fill:'var(--ui-accent)', fillOpacity:.14}),
+          !peaks.length && h('line',{x1:0,x2:1200,y1:22,y2:22,stroke:'currentColor',strokeWidth:1}),
+          peaks.length > 0 && h('path',{d:wavePath,stroke:'currentColor',fill:'none',strokeWidth:barWidth}),
+          peaks.length > 0 && h('path',{d:playedPath,stroke:'var(--ui-accent)',fill:'none',strokeWidth:barWidth}),
+          h('line',{x1:x(position),x2:x(position),y1:0,y2:44,stroke:'var(--ui-accent)',strokeWidth:2})),
+        h('input',{type:'range',min:0,max:timeline?.duration || 1,step:.1,value:position,disabled:!timeline,'aria-label':'Seek meeting audio',
+          'aria-valuetext':`${clock(position)} of ${timeline?clock(timeline.duration):'unknown'}`,
+          onChange:e=>seek(e.target.value),onPointerUp:commitSeek,onKeyUp:commitSeek,onBlur:commitSeek})),
+      lanes.length > 0 && duration > 0 && h('svg', {className:'mn-lanes', viewBox:'0 0 1200 4', preserveAspectRatio:'none', 'aria-hidden':true},
+        ...lanes.map((l,i) => h('rect', {key:i, x:x(l.start), width:Math.max(.5, x(l.end)-x(l.start)), y:0, height:4, fill:l.color})))),
+    h('span',{className:'mn-clock'},`${clock(position)} / ${timeline?clock(timeline.duration):'…'}`),
+    h('select',{className:'mn-speed','aria-label':'Playback speed',value:rate,onChange:e=>{const v=Number(e.target.value);speed.current=v;setRate(v);if(audio.current)audio.current.playbackRate=v}},...[.75,1,1.25,1.5,2].map(v=>h('option',{key:v,value:v},`${v}×`))),
     h('audio',{ref:audio,preload:'auto','aria-label':'Full meeting audio',onPlay:()=>setRunning(true),onPause:()=>setRunning(false),
-      onTimeUpdate:()=>{if(scrubTarget.current !== null)return;const time=Math.min(total.current,offset.current+(audio.current?.currentTime || 0));setPosition(time);onPosition(time)},
+      onTimeUpdate:()=>{
+        if(scrubTarget.current !== null)return
+        const time=Math.min(total.current,offset.current+(audio.current?.currentTime || 0))
+        setPosition(time);onPosition(time)
+        if(stopAt.current !== null && time >= stopAt.current) { stopAt.current = null; stop() }
+      },
       onEnded:()=>{const end=offset.current+length.current;if(end<total.current && desired.current)load(end,true);else{stop();setPosition(total.current);onPosition(total.current)}},
       onError:()=>{stop();setError('Audio could not be decoded. Seek to retry.')}}),
     error && h('p',{role:'alert'},error), waveError && h('p',{className:'mn-faint'},waveError))
-}
-
-function Player({ playing, onClose }) {
-  if (!playing) return null
-  return h('div', { className: 'mn-player', role: 'region', 'aria-label': 'Audio playback' },
-    h('div', { style: { display: 'grid', minWidth: 0 } },
-      h('strong', { style: { fontSize: 12.5 } }, playing.label),
-      h('span', { className: 'mn-faint' }, `${clock(playing.start)} – ${clock(playing.start + playing.duration)}${playing.clipped ? ' · first 30 s of this passage' : ''}`)),
-    h('audio', { src: playing.url, controls: true, autoPlay: true, 'aria-label': `Audio from ${clock(playing.start)}` }),
-    btn({ variant: 'ghost', size: 'xs', onClick: onClose, 'aria-label': 'Close player' }, 'Close'))
 }
 
 function Tabs({ tabs, value, onChange, label }) {
@@ -1045,26 +1168,33 @@ function SpeakerPicker({ segment, participants, busy, onPick, onCancel }) {
   btn({ variant: 'ghost', size: 'xs', onClick: onCancel }, 'Cancel'))
 }
 
-function SegmentRow({ s, participants, corrected, active, flash, busy, play, correct, editing, setEditing }) {
+// A continuation turn (same speaker as the turn above) keeps its reassign
+// control but shows only the speaker dot, so runs of speech read as one block.
+function SegmentRow({ s, participants, corrected, active, flash, busy, play, correct, editing, setEditing, continued }) {
   const label = speakerName(s.participant, s.name)
-  return h('li', { className: 'mn-seg', 'data-seg': s.id, 'data-active': active ? 'true' : undefined, 'data-flash': flash ? 'true' : undefined },
-    h('div', { className: 'mn-seg-head' },
-      editing === `speaker:${s.id}`
-        ? h(SpeakerPicker, { segment: s, participants, busy, onCancel: () => setEditing(null),
-          onPick: async who => { if (await correct([['speaker', s.id, who]])) setEditing(null) } })
-        : h('button', { type: 'button', className: 'mn-chip', disabled: busy, onClick: () => setEditing(`speaker:${s.id}`),
-          'aria-label': `${label} at ${clock(s.start)}. Change speaker` },
-        h('span', { className: 'mn-dot', 'aria-hidden': true, style: { '--mn-c': speakerColor(s.participant, participants) } }), label),
-      h('button', { type: 'button', className: 'mn-time', onClick: () => play(s), 'aria-label': `Play from ${clock(s.start)}, ${label}` }, `▶ ${clock(s.start)}`),
-      s.source && h('span', { className: 'mn-faint' }, `Recording ${s.source.part} · ${clock(s.source.start)}`),
-      s.chunk && h('span', { className: 'mn-faint' }, `Audio chunk ${s.chunk.index}`),
-      corrected?.has('speaker') && h(Badge, { variant: 'outline' }, 'Speaker corrected'),
-      corrected?.has('text') && h(Badge, { variant: 'outline' }, 'Text edited'),
-      editing !== `text:${s.id}` && h('span', { className: 'mn-seg-actions' },
-        btn({ variant: 'ghost', size: 'xs', disabled: busy, onClick: () => setEditing(`text:${s.id}`), 'aria-label': `Edit text at ${clock(s.start)}` }, 'Edit text'))),
-    editing === `text:${s.id}`
-      ? h(TextEditor, { segment: s, busy, onCancel: () => setEditing(null), onSave: async text => { if (await correct([['text', s.id, text]])) setEditing(null) } })
-      : h('p', { className: 'mn-seg-text', onDoubleClick: () => !busy && setEditing(`text:${s.id}`) }, s.text))
+  const origin = [s.source && `Recording ${s.source.part} · ${clock(s.source.start)}`, s.chunk && `Audio chunk ${s.chunk.index}`].filter(Boolean).join(' · ')
+  const cont = continued && editing !== `speaker:${s.id}` && !corrected?.size
+  const chip = h('button', { type: 'button', className: 'mn-chip', 'data-cont': cont ? 'true' : undefined, disabled: busy, onClick: () => setEditing(`speaker:${s.id}`),
+    'aria-label': `${label} at ${clock(s.start)}. Change speaker`, title: cont ? `${label} · change speaker` : undefined },
+  h('span', { className: 'mn-dot', 'aria-hidden': true, style: { '--mn-c': speakerColor(s.participant, participants) } }), !cont && label)
+  return h('li', { className: 'mn-seg', 'data-seg': s.id, 'data-active': active ? 'true' : undefined, 'data-flash': flash ? 'true' : undefined, 'data-cont': cont ? 'true' : undefined },
+    h('div', { className: 'mn-seg-time' },
+      h('button', { type: 'button', className: 'mn-time', onClick: () => play(s), title: origin || undefined, 'aria-label': `Play from ${clock(s.start)}, ${label}` }, clock(s.start)),
+      cont && chip,
+      s.source && !cont && h('span', { className: 'mn-part', title: origin }, `Part ${s.source.part}`)),
+    h('div', { className: 'mn-seg-body' },
+      h('div', { className: 'mn-seg-head' },
+        editing === `speaker:${s.id}`
+          ? h(SpeakerPicker, { segment: s, participants, busy, onCancel: () => setEditing(null),
+            onPick: async who => { if (await correct([['speaker', s.id, who]])) setEditing(null) } })
+          : !cont && chip,
+        corrected?.has('speaker') && h('span', { className: 'mn-mark' }, icon('pencil', 11), 'Speaker corrected'),
+        corrected?.has('text') && h('span', { className: 'mn-mark' }, icon('pencil', 11), 'Text edited'),
+        editing !== `text:${s.id}` && h('span', { className: 'mn-seg-actions' },
+          btn({ variant: 'ghost', size: 'xs', disabled: busy, onClick: () => setEditing(`text:${s.id}`), 'aria-label': `Edit text at ${clock(s.start)}` }, 'Edit text'))),
+      editing === `text:${s.id}`
+        ? h(TextEditor, { segment: s, busy, onCancel: () => setEditing(null), onSave: async text => { if (await correct([['text', s.id, text]])) setEditing(null) } })
+        : h('p', { className: 'mn-seg-text', onDoubleClick: () => !busy && setEditing(`text:${s.id}`) }, s.text)))
 }
 
 function SpeakerRow({ person, participants, total, busy, play, correct, onJump }) {
@@ -1076,6 +1206,7 @@ function SpeakerRow({ person, participants, total, busy, play, correct, onJump }
   const label = speakerName(person.id, person.name)
   const share = total > 0 ? Math.round(person.seconds / total * 100) : 0
   const target = others.find(o => o.id === into)
+  const color = speakerColor(person.id, participants)
   const rename = async () => {
     const value = name.trim()
     if (!value || value === person.name) { setMode(null); return }
@@ -1083,7 +1214,7 @@ function SpeakerRow({ person, participants, total, busy, play, correct, onJump }
   }
   return h('li', { className: 'mn-spk', 'aria-label': label },
     h('div', { className: 'mn-spk-main' },
-      h('span', { className: 'mn-dot mn-dot-lg', 'aria-hidden': true, style: { '--mn-c': speakerColor(person.id, participants) } }),
+      h('span', { className: 'mn-dot mn-dot-lg', 'aria-hidden': true, style: { '--mn-c': color } }),
       h('div', { className: 'mn-spk-name' },
         mode === 'rename'
           ? h('form', { onSubmit: e => { e.preventDefault(); rename() } },
@@ -1091,12 +1222,14 @@ function SpeakerRow({ person, participants, total, busy, play, correct, onJump }
               onFocus: e => e.target.select(), onChange: e => setName(e.target.value),
               onKeyDown: e => { if (e.key === 'Escape') { e.preventDefault(); setName(person.name || ''); setMode(null) } } }),
             h('span', { className: 'mn-faint' }, 'Enter saves · Esc cancels'))
-          : h('button', { type: 'button', className: 'mn-name-btn', disabled: busy, onClick: () => { setName(person.name || ''); setMode('rename') }, 'aria-label': `Rename ${label}` }, label),
-        h('span', { className: 'mn-faint' }, `${spokenDuration(person.seconds)} · ${share}% · ${person.segments} ${person.segments === 1 ? 'turn' : 'turns'}${person.name ? ` · label ${person.id}` : ''}`)),
+          : h('button', { type: 'button', className: 'mn-name-btn', disabled: busy, onClick: () => { setName(person.name || ''); setMode('rename') }, 'aria-label': `Rename ${label}`, title: person.name ? `Label ${person.id} · click to rename` : 'Click to rename' }, label)),
       h('div', { className: 'mn-spk-tools' },
-        btn({ variant: 'ghost', size: 'xs', onClick: () => play(person.first), 'aria-label': `Play from first turn of ${label}` }, '▶'),
-        btn({ variant: 'ghost', size: 'xs', onClick: () => onJump(person.id), 'aria-label': `Next turn by ${label}` }, 'Next'),
-        person.mergeable && person.mergeSegments > 0 && others.length > 0 && btn({ variant: 'ghost', size: 'xs', disabled: busy, 'aria-expanded': mode === 'merge', onClick: () => setMode(mode === 'merge' ? null : 'merge'), 'aria-label': `Merge ${label} into another speaker` }, 'Merge…'))),
+        iconBtn({ name: 'play', label: `Play from first turn of ${label}`, onClick: () => play(person.first) }),
+        iconBtn({ name: 'next', label: `Next turn by ${label}`, onClick: () => onJump(person.id) }),
+        person.mergeable && person.mergeSegments > 0 && others.length > 0 && iconBtn({ name: 'merge', label: `Merge ${label} into another speaker`, disabled: busy, 'aria-expanded': mode === 'merge', onClick: () => setMode(mode === 'merge' ? null : 'merge') }))),
+    h('div', { className: 'mn-spk-stats', title: `${person.segments} ${person.segments === 1 ? 'turn' : 'turns'}` },
+      h('span', { className: 'mn-bar', 'aria-hidden': true }, h('span', { style: { width: `${share}%`, '--mn-c': color } })),
+      h('span', { className: 'mn-faint mn-nowrap' }, `${spokenDuration(person.seconds)} · ${share}%`)),
     mode === 'merge' && h('form', { className: 'mn-merge', onSubmit: async e => { e.preventDefault(); if (into && await correct([['merge', person.id, into]])) setMode(null) } },
       h(Field, { label: `Merge ${label} into` },
         h('select', { className: 'mn-input mn-input-sm', value: into, onChange: e => setInto(e.target.value), disabled: busy },
@@ -1106,6 +1239,8 @@ function SpeakerRow({ person, participants, total, busy, play, correct, onJump }
         h(Button, { type: 'submit', size: 'xs', disabled: busy || !into }, 'Merge'),
         btn({ variant: 'ghost', size: 'xs', onClick: () => setMode(null) }, 'Cancel'))))
 }
+
+const SPEAKERS_HELP = 'Anonymous voices from diarization. Merge labels that are one person; names are your own labels. Talk time is estimated from transcript segments.'
 
 function SpeakersPanel({ meeting, participants, busy, play, correct, onJump, onClose }) {
   const corrections = meeting.corrections || []
@@ -1118,10 +1253,9 @@ function SpeakersPanel({ meeting, participants, busy, play, correct, onJump, onC
   }
   return h('aside', { className: 'mn-panel', 'aria-label': 'Speakers' },
     h('div', { className: 'mn-spread' },
-      h('h3', { className: 'mn-panel-title' }, 'Speakers', h('span', { className: 'mn-count' }, participants.length)),
+      h('h3', { className: 'mn-panel-title' }, 'Speakers', h('span', { className: 'mn-count' }, participants.length),
+        h('span', { className: 'mn-faint', title: SPEAKERS_HELP, style: { display: 'inline-flex' } }, icon('info', 13), h('span', { className: 'mn-sr' }, SPEAKERS_HELP))),
       onClose && btn({ variant: 'ghost', size: 'xs', className: 'mn-drawer-only', onClick: onClose, 'aria-label': 'Close speakers panel' }, 'Close')),
-    h('p', { className: 'mn-faint' }, 'Anonymous voices from diarization. Merge labels that are one person; names are your own labels.'),
-    h('p', { className: 'mn-faint' }, 'Times estimate speech from transcript segments. Percentages show each speaker’s share of that time.'),
     h('ul', { className: 'mn-spk-list' }, ...participants.map(p => h(SpeakerRow, { key: p.id, person: p, participants, total, busy, play, correct, onJump }))),
     h('h3', { className: 'mn-panel-title' }, 'Changes', h('span', { className: 'mn-count' }, `rev ${meeting.revision}`)),
     history.length === 0 ? h('p', { className: 'mn-faint' }, 'No corrections yet. The original transcript is always kept.')
@@ -1131,7 +1265,7 @@ function SpeakersPanel({ meeting, participants, busy, play, correct, onJump, onC
           : btn({ size: 'xs', variant: 'ghost', disabled: busy, onClick: () => correct([['undo', '', c.id]]), 'aria-label': `Undo: ${describeCorrection(c, meeting.segments, nameOf)}` }, 'Undo')))))
 }
 
-function TranscriptPanel({ meeting, participants, cursor, activeId, playing, focusId, setFocusId, busy, play, correct }) {
+function TranscriptPanel({ meeting, participants, cursor, activeId, focusId, setFocusId, busy, play, correct }) {
   const [query, setQuery] = useState('')
   const [speaker, setSpeaker] = useState('')
   const [editing, setEditing] = useState(null) // 'text:<id>' | 'speaker:<id>'
@@ -1172,18 +1306,18 @@ function TranscriptPanel({ meeting, participants, cursor, activeId, playing, foc
           h('option', { value: '' }, 'All speakers'),
           ...participants.map(p => h('option', { key: p.id, value: p.id }, speakerName(p.id, p.name)))),
         h('span', { className: 'mn-grow' }),
-        h('label', null, h('input', {type:'checkbox',checked:follow,onChange:e=>setFollow(e.target.checked)}), ' Follow audio'),
+        h('label', null, h('input', {type:'checkbox',checked:follow,onChange:e=>setFollow(e.target.checked)}), 'Follow audio'),
         busy && h('span', { className: 'mn-faint', role: 'status' }, 'Saving…'),
         btn({ variant: 'ghost', disabled: busy || !latest, onClick: () => correct([['undo', '', latest.id]]),
-          'aria-label': latest ? `Undo last change: ${describe(latest)}` : 'Undo last change', title: latest ? describe(latest) : 'Nothing to undo' }, 'Undo'),
+          'aria-label': latest ? `Undo last change: ${describe(latest)}` : 'Undo last change', title: latest ? describe(latest) : 'Nothing to undo' }, icon('undo'), 'Undo'),
         btn({ className: 'mn-drawer-only', 'aria-expanded': drawer, onClick: () => setDrawer(!drawer) }, `Speakers ${participants.length}`)),
-      h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' },
-        shown.length === meeting.segments.length ? `${meeting.segments.length} turns · click a speaker name to reassign, double-click text to edit`
-          : `Showing ${shown.length} of ${meeting.segments.length} turns`),
       shown.length === 0 && h('p', { className: 'mn-muted' }, 'No turns match.'),
       h('ol', { className: 'mn-transcript', ref: listRef, tabIndex:0, 'aria-label':'Scrollable transcript' },
-        ...shown.map(s => h(SegmentRow, { key: s.id, s, participants, corrected: corrected[s.id], active: activeId === s.id, flash: focusId?.id === s.id,
-          busy, play, correct, editing, setEditing })))),
+        ...shown.map((s, i) => h(SegmentRow, { key: s.id, s, continued: i > 0 && shown[i - 1].participant === s.participant, participants, corrected: corrected[s.id], active: activeId === s.id, flash: focusId?.id === s.id,
+          busy, play, correct, editing, setEditing }))),
+      h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' },
+        shown.length === meeting.segments.length ? `${meeting.segments.length} turns · click a name to reassign · double-click text to edit`
+          : `Showing ${shown.length} of ${meeting.segments.length} turns`)),
     h(SpeakersPanel, { meeting, participants, busy, play, correct, onJump: jump, onClose: () => setDrawer(false) }))
 }
 
@@ -1293,18 +1427,27 @@ export function RequestBox({ meeting, hasNotes, hostApi = host, requestText, tit
       await globalThis.navigator.clipboard.writeText(text)
       setCopied('Copied. Paste it into a Hermes chat.')
     } catch {
+      setShowRequest(true)
+      globalThis.requestAnimationFrame?.(() => { ref.current?.focus(); ref.current?.select() })
       ref.current?.focus(); ref.current?.select()
       setCopied('Copying is not available here. The request is selected; copy it with your keyboard.')
     }
   }
-  return h('div', { className: 'mn-card' },
+  // Once notes exist, regenerating is a secondary action: one row, details on demand.
+  const compact = hasNotes && !requestText
+  const [showRequest, setShowRequest] = useState(!compact)
+  const explain = description || `Start a new session, then send the prepared request. The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` This session uses the open Hermes profile (${meeting.owner_profile}) and its model, instructions and tools.` : ''}`
+  return h('div', { className: 'mn-card', style: compact ? { padding: '10px 14px', gap: 6 } : undefined },
     h('div', { className: 'mn-spread' },
-      h('strong', null, title || (hasNotes ? 'Regenerate notes in Hermes chat' : 'Generate notes in Hermes chat')),
-      btn({ size: 'xs', onClick: copy }, 'Copy request'),
-      btn({ size: 'sm', variant: 'default', onClick: openProfile, disabled: opening }, opening ? 'Opening…' : requestText ? 'Start Hermes session' : 'Start summarization session')),
-    h('p', { className: 'mn-muted' }, description || `Start a new session, then send the prepared request. The meeting_notes:analyze skill loads the transcript into your Hermes chat. Hermes writes the notes in that session and saves them here with checked source quotes.${meeting.owner_profile ? ` This session uses the open Hermes profile (${meeting.owner_profile}) and its model, instructions and tools.` : ''}`),
-    h('input', { ref, className: 'mn-input', readOnly: true, value: text, 'aria-label': inputLabel || 'Notes request to paste into Hermes chat', onFocus: e => e.target.select(), style: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 } }),
-    h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' }, copied || hint || 'Review speakers first. The skill reads the current transcript and checks its revision before saving.'))
+      h('strong', { className: 'mn-grow' }, title || (hasNotes ? 'Regenerate notes in Hermes chat' : 'Generate notes in Hermes chat')),
+      h('div', { className: 'mn-actions' },
+        btn({ size: 'xs', variant: 'ghost', onClick: copy }, 'Copy request'),
+        btn({ size: 'sm', variant: compact ? 'outline' : 'default', onClick: openProfile, disabled: opening }, opening ? 'Opening…' : requestText ? 'Start Hermes session' : 'Start summarization session'))),
+    h('details', { open: showRequest, onToggle: e => setShowRequest(e.currentTarget.open), style: { display: 'grid', gap: 8 } },
+      h('summary', { className: 'mn-faint', style: { cursor: 'pointer', display: compact ? undefined : 'none' } }, 'Show request'),
+      h('p', { className: 'mn-muted', style: { margin: '6px 0' } }, explain),
+      h('input', { ref, className: 'mn-input', readOnly: true, value: text, 'aria-label': inputLabel || 'Notes request to paste into Hermes chat', onFocus: e => e.target.select(), style: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 12 } })),
+    h('p', { className: 'mn-faint', role: 'status', 'aria-live': 'polite' }, copied || hint || (compact ? '' : 'Review speakers first. The skill reads the current transcript and checks its revision before saving.')))
 }
 
 function Citation({ citation, source, participants, play, onShow, canShow }) {
@@ -1315,7 +1458,7 @@ function Citation({ citation, source, participants, play, onShow, canShow }) {
       source && h(Who, { participant: source.participant, name: source.name, participants }),
       source && h('span', null, clock(source.start)),
       source?.source && h('span', null, `Recording ${source.source.part} · ${clock(source.source.start)}`),
-      source && btn({ variant: 'ghost', size: 'xs', onClick: () => play(source), 'aria-label': `Play source at ${clock(source.start)}, ${who}` }, '▶ Play source'),
+      source && btn({ variant: 'ghost', size: 'xs', onClick: () => play(source), 'aria-label': `Play source at ${clock(source.start)}, ${who}` }, icon('play', 10), 'Play'),
       canShow && btn({ variant: 'ghost', size: 'xs', onClick: onShow }, 'Show in transcript')),
     citation.source_changed && h(Badge, { variant: 'warn' }, 'Transcript changed since these notes. Quote is from the analyzed version.'))
 }
@@ -1325,10 +1468,10 @@ function NoteItem({ item, analysis, participants, play, showSegment, liveIds }) 
   return h('article', { className: 'mn-note' },
     h('p', { className: 'mn-note-text' }, item.text),
     item.kind === 'commitment' && h('dl', { className: 'mn-attrs' },
-      h('dt', null, 'Owner'),
-      h('dd', null, h('span', null, owner.text), owner.note && h('span', { className: 'mn-faint' }, owner.note)),
-      h('dt', null, 'Due'),
-      h('dd', null, h('span', null, due.text), due.quote && h('span', { className: 'mn-faint' }, `from “${due.quote}”`), due.badge && h(Badge, { variant: 'warn' }, due.badge))),
+      h('div', null, h('dt', null, 'Owner'),
+        h('dd', null, h('span', null, owner.text), owner.note && h('span', { className: 'mn-faint' }, owner.note))),
+      h('div', null, h('dt', null, 'Due'),
+        h('dd', null, h('span', null, due.text), due.quote && h('span', { className: 'mn-faint' }, `from “${due.quote}”`), due.badge && h(Badge, { variant: 'warn' }, due.badge)))),
     ...item.citations.map(c => h(Citation, { key: c.segment_id, citation: c, source: analysis.sources[c.segment_id], participants, play,
       canShow: liveIds.has(c.segment_id), onShow: () => showSegment(c.segment_id) })))
 }
@@ -1377,20 +1520,21 @@ function NotesPanel({ meeting, participants, rest, play, showSegment }) {
         h('p', null, historical ? 'The transcript has changed since this version was generated.' : 'The meeting changed after these notes were generated. Review them or regenerate with the request above. Owners based on who spoke already reflect your speaker corrections; owners named in the text do not change.')),
       analysis.unmatched_previous_items?.length > 0 && h(Callout, { tone: 'info' },
         h('p', null, `${analysis.unmatched_previous_items.length} ${analysis.unmatched_previous_items.length === 1 ? 'item' : 'items'} from the previous version did not carry over exactly. Choose an earlier version above to review them.`)),
-      h('p', { className: 'mn-faint' }, `Generated ${relative(analysis.created)} from revision ${analysis.revision}${analysis.transcript !== meeting.active ? ' of an earlier transcript' : ''}${analysis.profile ? ` · profile ${analysis.profile}` : ''}${analysis.model ? ` · ${analysis.model}` : ''}. Quotes are checked word for word against the transcript; the interpretation still needs your review.`),
+      h('p', { className: 'mn-faint', title: 'Quotes are checked word for word against the transcript; the interpretation still needs your review.' },
+        `Generated ${relative(analysis.created)} from revision ${analysis.revision}${analysis.transcript !== meeting.active ? ' of an earlier transcript' : ''}${analysis.profile ? ` · profile ${analysis.profile}` : ''}${analysis.model ? ` · ${analysis.model}` : ''} · quotes verified against the transcript`),
       counts.length > 1 && h('nav', { className: 'mn-jump', 'aria-label': 'Note sections' },
-        ...counts.map(k => h('a', { key: k.kind, href: `#mn-notes-${k.kind}`, className: 'mn-faint',
-          onClick: e => { e.preventDefault(); globalThis.document?.getElementById(`mn-notes-${k.kind}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }) } }, `${k.label} ${k.n}`))),
+        ...counts.map(k => h('a', { key: k.kind, href: `#mn-notes-${k.kind}`,
+          onClick: e => { e.preventDefault(); globalThis.document?.getElementById(`mn-notes-${k.kind}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }) } }, k.label, h('span', { className: 'mn-count' }, k.n)))),
       analysis.items.length === 0 && h('p', { className: 'mn-muted' }, 'The model found no notes it could support with quotes from this transcript.'),
-      ...KINDS.map(k => {
+      h('div', { className: 'mn-notes' }, ...KINDS.map(k => {
         const items = analysis.items.filter(i => i.kind === k.kind)
         if (!items.length) return null
-        return h('section', { key: k.kind, id: `mn-notes-${k.kind}`, className: 'mn-card', 'aria-label': k.label },
+        return h('section', { key: k.kind, id: `mn-notes-${k.kind}`, className: 'mn-notes-section', 'aria-label': k.label },
           h('h3', null, k.label, h('span', { className: 'mn-count' }, items.length)),
           k.note && h('p', { className: 'mn-faint' }, k.note),
           k.kind === 'commitment' && h('p', { className: 'mn-faint' }, 'Owners and due dates are proposals from the transcript and are not confirmed. Nothing is sent to a task manager.'),
           ...items.map(item => h(NoteItem, { key: item.id, item, analysis, participants, play, showSegment, liveIds })))
-      })))
+      }))))
 }
 
 export function actionsRequest(meeting) {
@@ -1493,9 +1637,11 @@ export function ActionItemsPanel({ meeting, participants = [], rest, play, showS
       ...data.handoffs.filter(h => !data.items.some(i => i.id === h.action_id)).map(handoff => h('article', { key: handoff.id }, h('p', null, handoff.snapshot.item.text), handoffCard(handoff)))))
 }
 
-function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab, onDeleted, onDeleteBusy }) {
+function MeetingView({ meeting, notice, busy, act, rest, correct, tab, setTab, onDeleted, onDeleteBusy }) {
   const participants = useMemo(() => participantsOf(meeting.segments, meeting.corrections), [meeting.segments, meeting.corrections])
   const [focusId, setFocusId] = useState(null)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const detailsRef = useRef(null)
   const cursor = useRef(-1)
   const [activeId, setActiveId] = useState(null)
   const setCursor = useCallback(time => {
@@ -1503,6 +1649,10 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
     setActiveId(meeting.segments.find(s => time >= s.start && time < s.end)?.id ?? null)
   }, [meeting.segments])
   const [seekRequest, setSeekRequest] = useState(null)
+  // Transcript turns play on from their start; quoted sources stop at their end.
+  const seek = segment => setSeekRequest({ start: segment.start, at: Date.now() })
+  const playSource = source => setSeekRequest({ start: source.start, end: source.end, at: Date.now() })
+  const lanes = useMemo(() => meeting.segments.map(s => ({ start: s.start, end: s.end, color: speakerColor(s.participant, participants) })), [meeting.segments, participants])
   const duration = meeting.segments.length ? Math.max(...meeting.segments.map(s => s.end || 0)) : 0
   const ready = Boolean(meeting.active)
   const analysis = meeting.analysis
@@ -1510,38 +1660,34 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
   const tabs = [
     { id: 'transcript', label: 'Transcript', count: ready ? meeting.segments.length : null },
     { id: 'notes', label: 'Notes', count: noteCount, badge: analysis?.needs_review ? h(Badge, { variant: 'warn', size: 'xs' }, 'Review') : null },
-    { id: 'actions', label: 'Action Items', count: null }
+    { id: 'actions', label: 'Action items', count: null }
   ]
   const showSegment = id => { setTab('transcript'); setFocusId({ id, at: Date.now() }) }
+  const openDetails = () => {
+    setDetailsOpen(true)
+    globalThis.requestAnimationFrame?.(() => detailsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }))
+  }
+  const chunks = meeting.transcription_chunks || []
   return h('div', { className: 'mn-page' },
     h('header', { className: 'mn-header' },
-      h('div', { className: 'mn-title-row' },
-        h('h2', null, meeting.title),
-        ready && h('span', { className: 'mn-muted mn-nowrap', title: 'End of the returned transcript; the recording may be longer' }, `Transcript to ${clock(duration)}`),
-        h(StateBadge, { state: meeting.job.state })),
-      h('div', { className: 'mn-facts' },
-        h('span', null, `${formatMeetingDate(meeting.date, meeting.timezone)}${meeting.timezone ? ` · ${meeting.timezone}` : ''}`),
-        ready && h('span', null, `${participants.length} ${participants.length === 1 ? 'speaker' : 'speakers'}`),
-        ready && h('span', null, `${meeting.segments.length} turns`),
-        ready && analysis && h('span', null, `${noteCount} ${noteCount === 1 ? 'note' : 'notes'}${analysis.needs_review ? ' · needs review' : ''}`))),
+      h('div', { className: 'mn-header-text' },
+        h('div', { className: 'mn-title-row' },
+          h('h2', null, meeting.title),
+          meeting.job.state !== 'completed' && h(StateBadge, { state: meeting.job.state })),
+        h('div', { className: 'mn-facts' },
+          h('span', null, `${formatMeetingDate(meeting.date, meeting.timezone)}${meeting.timezone ? ` · ${meeting.timezone}` : ''}`),
+          ready && h('span', { title: 'End of the returned transcript; the recording may be longer' }, `Transcript to ${clock(duration)}`),
+          ready && h('span', null, `${participants.length} ${participants.length === 1 ? 'speaker' : 'speakers'}`),
+          ready && h('span', null, `${meeting.segments.length} turns`),
+          meeting.recordings?.length > 0 && h('span', null, `${meeting.recordings.length} recordings combined`))),
+      h('div', { className: 'mn-header-actions' },
+        iconBtn({ name: 'more', label: 'Recording details', className: 'mn-icon-btn-lg', 'aria-expanded': detailsOpen, onClick: () => (detailsOpen ? setDetailsOpen(false) : openDetails()) }))),
     notice && h(Callout, { tone: notice.tone || 'ok', role: 'status' }, h('p', null, notice.text)),
-    ready && h(MeetingPlayer, {meetingId:meeting.id,rest,seekRequest,onPosition:setCursor,suspended:Boolean(playing),onStart:closePlayer}),
-    h(DeleteMeeting, { meeting, rest, disabled: busy, onBusy: onDeleteBusy, onDeleted }),
-    meeting.transcription_chunks?.some(c => c.recognized_segments === 0) && meeting.segments.length > 0 &&
-      h(Callout, { tone: 'warn', title: 'Some audio has no recognized words', role: 'status' }, 'At least one chunk returned no words. Review its audio before relying on these notes; this does not prove silence.'),
-    meeting.transcription_chunks?.length > 1 && h('details', { className: 'mn-card' },
-      h('summary', null, `${meeting.transcription_chunks.length} transcription chunks`),
-      h('p', { className: 'mn-muted' }, 'Timestamps follow the full recording. Speaker labels are separate per chunk; merge matching speakers before generating notes. Review speech near the cut points.'),
-      h('ol', null, ...meeting.transcription_chunks.map(c => h('li', { key: c.index },
-        `${clock(c.start)} – ${clock(c.start + c.duration)} · ${stateInfo(c.state).label}${c.recognized_segments === 0 ? ' · no words returned; review the audio' : ''}`)))),
-    ready && !meeting.segments.length && h(Callout, { tone: 'warn', title: 'No words returned' }, 'The model returned no words. This does not confirm that the recording was silent.'),
-    meeting.recordings?.length > 0 && h('details', { className: 'mn-card' },
-      h('summary', null, `${meeting.recordings.length} combined recordings`),
-      h('p', { className: 'mn-muted' }, 'Transcript snapshots in playback order. Match speakers across recordings before generating notes. Later edits to the originals do not change this meeting.'),
-      h('ol', null, ...meeting.recordings.map(r => h('li', { key: r.part }, `${r.title} · starts ${clock(r.offset)} · source revision ${r.revision}`)))),
     h(StatusPanel, { meeting, busy, act }),
-    h(RecordingStorage, { meeting, rest }),
-    h(Player, { playing, onClose: closePlayer }),
+    chunks.some(c => c.recognized_segments === 0) && meeting.segments.length > 0 &&
+      h(Callout, { tone: 'warn', title: 'Some audio has no recognized words', role: 'status' }, 'At least one chunk returned no words. Review its audio before relying on these notes; this does not prove silence.'),
+    ready && !meeting.segments.length && h(Callout, { tone: 'warn', title: 'No words returned' }, 'The model returned no words. This does not confirm that the recording was silent.'),
+    ready && h(MeetingPlayer, { meetingId: meeting.id, rest, seekRequest, onPosition: setCursor, lanes }),
     !ready ? h('div', { className: 'mn-card', 'aria-busy': stateInfo(meeting.job.state).active ? true : undefined },
       h('p', { className: 'mn-muted' }, stateInfo(meeting.job.state).active ? 'The transcript will appear here when transcription finishes.' : 'No transcript is available for this meeting.'),
       stateInfo(meeting.job.state).active && h('div', { 'aria-hidden': true, style: { display: 'grid', gap: 8 } },
@@ -1549,9 +1695,24 @@ function MeetingView({ meeting, notice, busy, act, rest, play, playing, closePla
       : h(Fragment, null,
         h(Tabs, { tabs, value: tab, onChange: setTab, label: 'Meeting sections' }),
         h('div', { role: 'tabpanel', id: `mn-panel-${tab}`, 'aria-labelledby': `mn-tab-${tab}`, tabIndex: -1 },
-          tab === 'transcript' && h(TranscriptPanel, { meeting, participants, cursor, activeId, playing, focusId, setFocusId, busy, play:segment=>{closePlayer();setSeekRequest({start:segment.start,at:Date.now()})}, correct }),
-          tab === 'notes' && h(NotesPanel, { meeting, participants, rest, play, showSegment }),
-          tab === 'actions' && h(ActionItemsPanel, { meeting, participants, rest, play, showSegment }))))
+          tab === 'transcript' && h(TranscriptPanel, { meeting, participants, cursor, activeId, focusId, setFocusId, busy, play: seek, correct }),
+          tab === 'notes' && h(NotesPanel, { meeting, participants, rest, play: playSource, showSegment }),
+          tab === 'actions' && h(ActionItemsPanel, { meeting, participants, rest, play: playSource, showSegment }))),
+    // Maintenance lives below the content: chunk boundaries, combined sources, storage, deletion.
+    h('details', { ref: detailsRef, className: 'mn-details', open: detailsOpen, onToggle: e => setDetailsOpen(e.currentTarget.open) },
+      h('summary', null, 'Recording details'),
+      h('div', { className: 'mn-details-body' },
+        chunks.length > 1 && h('details', { className: 'mn-card' },
+          h('summary', null, `${chunks.length} transcription chunks`),
+          h('p', { className: 'mn-muted' }, 'Timestamps follow the full recording. Speaker labels are separate per chunk; merge matching speakers before generating notes. Review speech near the cut points.'),
+          h('ol', null, ...chunks.map(c => h('li', { key: c.index },
+            `${clock(c.start)} – ${clock(c.start + c.duration)} · ${stateInfo(c.state).label}${c.recognized_segments === 0 ? ' · no words returned; review the audio' : ''}`)))),
+        meeting.recordings?.length > 0 && h('details', { className: 'mn-card' },
+          h('summary', null, `${meeting.recordings.length} combined recordings`),
+          h('p', { className: 'mn-muted' }, 'Transcript snapshots in playback order. Match speakers across recordings before generating notes. Later edits to the originals do not change this meeting.'),
+          h('ol', null, ...meeting.recordings.map(r => h('li', { key: r.part }, `${r.title} · starts ${clock(r.offset)} · source revision ${r.revision}`)))),
+        h(RecordingStorage, { meeting, rest }),
+        h(DeleteMeeting, { meeting, rest, disabled: busy, onBusy: onDeleteBusy, onDeleted }))))
 }
 
 function Welcome({ onNew, hasMeetings }) {
@@ -1673,11 +1834,8 @@ function MeetingWorkspace({ ctx, target, onLock }) {
   const [notice, setNotice] = useState(null)
   const [actionError, setActionError] = useState('')
   const [pollError, setPollError] = useState('')
-  const [playing, setPlaying] = useState(null)
   const selectedId = useRef(target?.meeting || lastSelected)
   const mutation = useRef(0)
-  const audioUrl = useRef(null)
-  const audioRequest = useRef(0)
   const mounted = useRef(true)
   const inflight = useRef(false)
 
@@ -1722,27 +1880,17 @@ function MeetingWorkspace({ ctx, target, onLock }) {
     globalThis.document?.addEventListener?.('visibilitychange', visible)
     return () => {
       mounted.current = false
-      audioRequest.current++
       clearInterval(timer)
       globalThis.document?.removeEventListener?.('visibilitychange', visible)
-      if (audioUrl.current) URL.revokeObjectURL(audioUrl.current)
-      audioUrl.current = null
     }
   }, [refresh])
-
-  const closePlayer = () => {
-    audioRequest.current++
-    if (audioUrl.current) URL.revokeObjectURL(audioUrl.current)
-    audioUrl.current = null
-    setPlaying(null)
-  }
 
   const open = async (id, message = null) => {
     if (parseMeetingLink(globalThis.window?.location.hash)) window.history.replaceState(window.history.state, '', '#/meeting-notes')
     selectedId.current = id
     lastSelected = id
     setView('meeting'); setNotice(message); setActionError('')
-    if (selected?.id !== id) { setSelected(null); setTab('transcript'); closePlayer() }
+    if (selected?.id !== id) { setSelected(null); setTab('transcript') }
     const seq = ++mutation.current
     try {
       const result = await rest(`/meetings/${id}`)
@@ -1775,28 +1923,9 @@ function MeetingWorkspace({ ctx, target, onLock }) {
     return meeting
   })
 
-  const play = async segment => {
-    if (!selected) return
-    const meetingId = selected.id
-    const seq = ++audioRequest.current
-    const span = Math.max(0, (segment.end || segment.start) - segment.start)
-    const duration = Math.min(PLAY_WINDOW_MAX, Math.max(1, span + 1))
-    try {
-      const result = await rest(`/meetings/${meetingId}/audio?start=${segment.start}&duration=${duration}`)
-      if (!mounted.current || audioRequest.current !== seq || selectedId.current !== meetingId) return
-      const bytes = Uint8Array.from(atob(result.base64), c => c.charCodeAt(0))
-      if (audioUrl.current) URL.revokeObjectURL(audioUrl.current)
-      audioUrl.current = URL.createObjectURL(new Blob([bytes], { type: result.mime }))
-      setPlaying({ url: audioUrl.current, segmentId: segment.id, start: segment.start, duration, clipped: span + 1 > PLAY_WINDOW_MAX,
-        label: speakerName(segment.participant, segment.name) })
-    } catch (e) {
-      if (mounted.current && audioRequest.current === seq && selectedId.current === meetingId) setActionError(`Playback unavailable: ${errorText(e)}`)
-    }
-  }
-
   const deleted = (result, deletedId) => {
     if (parseMeetingLink(globalThis.window?.location.hash)?.meeting === deletedId) window.history.replaceState(window.history.state, '', '#/meeting-notes')
-    mutation.current++; closePlayer(); selectedId.current = null; if (lastSelected === deletedId) lastSelected = null; setSelected(null)
+    mutation.current++; selectedId.current = null; if (lastSelected === deletedId) lastSelected = null; setSelected(null)
     setView('home'); setActionError(''); setPollError(''); setMeetings(rows => rows.filter(m => m.id !== deletedId))
     setNotice({ tone: result.pending_files ? 'warn' : 'ok', text: result.pending_files ? 'Meeting deleted. Some managed files await cleanup; reconnect storage and use Retry file cleanup in settings.' : 'Meeting and its managed files deleted.' })
   }
@@ -1814,11 +1943,11 @@ function MeetingWorkspace({ ctx, target, onLock }) {
       refresh()
     } })
     : view === 'settings' ? h(SettingsForm, { rest })
-      : view === 'meeting' && selected ? h(MeetingView, { key: selected.id, meeting: selected, notice, busy, act, rest, play, playing, closePlayer, correct, tab, setTab, onDeleted: deleted, onDeleteBusy: setBusy })
+      : view === 'meeting' && selected ? h(MeetingView, { key: selected.id, meeting: selected, notice, busy, act, rest, correct, tab, setTab, onDeleted: deleted, onDeleteBusy: setBusy })
         : view === 'meeting' ? h('div', { className: 'mn-page', 'aria-busy': true }, h('div', { className: 'mn-skel', style: { width: '40%', height: 20 } }), h('div', { className: 'mn-skel', style: { width: '70%' } }), h('p', { className: 'mn-faint' }, 'Loading meeting…'))
           : h(Welcome, { onNew: () => setView('upload'), hasMeetings: meetings.length > 0 })
 
-  const leave = next => { if (uploading || busy) return; closePlayer(); setView(next); setNotice(null); setActionError('') }
+  const leave = next => { if (uploading || busy) return; setView(next); setNotice(null); setActionError('') }
   return h('div', { className: 'mn' },
     h(Sidebar, { meetings, loaded, selectedId: selected?.id || selectedId.current, view, busy, locked: uploading || busy,
       onSelect: id => { if (!uploading && !busy) open(id) }, onNew: () => leave('upload'), onCombine: () => leave('combine'), onSettings: () => leave('settings'),

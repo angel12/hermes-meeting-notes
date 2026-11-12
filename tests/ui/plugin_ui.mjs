@@ -352,10 +352,14 @@ test('notes show review warnings, unconfirmed dates, saved-source playback and h
   assert.ok(screen.getByText(/not commitments/))
   assert.ok(!screen.queryByRole('button', { name: /^Generate/ }), 'no fake generate button')
   const before = created.length
+  // Quotes play through the one meeting player; there is no second clip player.
+  await waitFor(() => assert.equal(screen.getByRole('button', { name: 'Play meeting audio' }).disabled, false))
   fireEvent.click(screen.getAllByRole('button', { name: /^Play source at 0:05/ })[0])
-  await screen.findByRole('region', { name: 'Audio playback' })
+  await waitFor(() => assert.equal(created.length, before + 1))
+  assert.equal(screen.queryByRole('region', { name: 'Audio playback' }), null)
   const audioCall = b.calls.filter(c => c.path.includes('/audio?')).at(-1)
   assert.equal(new URL(audioCall.path, 'https://x').searchParams.get('start'), '5.5', 'uses analysis.sources timing')
+  assert.ok(screen.getByLabelText('Full meeting audio').src.startsWith('blob:'))
   fireEvent.click(screen.getAllByRole('button', { name: /^Play source at 0:05/ })[1])
   await waitFor(() => assert.equal(created.length, before + 2))
   assert.ok(revoked.includes(created[before].url), 'previous blob URL is revoked')
@@ -1011,7 +1015,7 @@ test('meeting links open notes and actions, enforce source profile, and stay rea
   await waitFor(() => assert.equal(screen.getByRole('tab', { name: /Notes/ }).getAttribute('aria-selected'), 'true'))
   window.location.hash = '#/meeting-notes?meeting=m1&tab=actions&profile=default'
   fireEvent(window, new Event('hashchange'))
-  await waitFor(() => assert.equal(screen.getByRole('tab', { name: /Action Items/ }).getAttribute('aria-selected'), 'true'))
+  await waitFor(() => assert.equal(screen.getByRole('tab', { name: /Action items/ }).getAttribute('aria-selected'), 'true'))
   cleanup()
   const denied = makeBackend()
   window.location.hash = '#/meeting-notes?meeting=m1&tab=notes&profile=other'
