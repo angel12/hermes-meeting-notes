@@ -27,7 +27,7 @@ export const CSS = `
 .mn-side-title h1{flex:1;font-size:14px;font-weight:600}
 .mn-side-actions{display:flex;gap:6px}
 .mn-side-actions>button:first-child{flex:1;min-width:0}
-.mn-filter-box{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:1px solid var(--mn-line);border-radius:6px;background:var(--ui-bg-input,transparent);color:var(--ui-text-tertiary)}
+.mn-filter-box{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:1px solid var(--mn-line);border-radius:6px;background:transparent;color:var(--ui-text-tertiary)}
 .mn-filter-box:focus-within{border-color:var(--ui-accent)}
 .mn-filter-box input{flex:1;min-width:0;border:0;outline:0;background:transparent;font:inherit;font-size:12.5px;color:var(--ui-text-primary)}
 .mn-list{list-style:none;margin:0;padding:0 8px 8px;overflow:auto;flex:1;min-height:0}
@@ -72,7 +72,7 @@ export const CSS = `
 .mn-field{display:grid;gap:4px;min-width:0}
 .mn-field>label{font-weight:500;font-size:12.5px}
 .mn-field small{color:var(--ui-text-tertiary);font-size:11.5px}
-.mn-input{font:inherit;color:inherit;background:var(--ui-bg-input,transparent);border:1px solid var(--ui-stroke-secondary);border-radius:6px;padding:6px 8px;width:100%;min-width:0}
+.mn-input{font:inherit;color:inherit;background:transparent;border:1px solid var(--ui-stroke-secondary);border-radius:6px;padding:6px 8px;width:100%;min-width:0}
 .mn-input:disabled{opacity:.6}
 textarea.mn-input{resize:vertical;min-height:64px;line-height:1.5}
 select.mn-input{padding-right:24px}
@@ -126,7 +126,7 @@ select.mn-input{padding-right:24px}
 .mn-meeting-player{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--mn-line);border-radius:10px;background:var(--ui-bg-elevated,var(--ui-bg-card));box-shadow:0 4px 14px -10px color-mix(in srgb,var(--ui-text-primary) 30%,transparent)}
 .mn-meeting-player>[role=alert],.mn-meeting-player>.mn-faint{flex-basis:100%}
 .mn-meeting-player{flex-wrap:wrap}
-.mn-play{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;flex:none;border:0;border-radius:50%;background:var(--ui-text-primary);color:var(--ui-bg-primary);cursor:pointer}
+.mn-play{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;flex:none;border:0;border-radius:50%;background:var(--ui-text-primary);color:var(--ui-bg-elevated,var(--ui-bg-editor));cursor:pointer}
 .mn-play:disabled{opacity:.4;cursor:default}
 .mn-play:hover:not(:disabled){opacity:.85}
 .mn-scrub{flex:1 1 240px;min-width:120px;display:grid;gap:4px}
@@ -136,7 +136,8 @@ select.mn-input{padding-right:24px}
 .mn-wave:focus-within{outline:2px solid var(--ui-accent);outline-offset:3px;border-radius:4px}
 .mn-lanes{display:block;width:100%;height:4px;border-radius:2px;background:var(--mn-soft);overflow:hidden}
 .mn-clock{font-family:var(--mn-mono);font-size:12px;color:var(--ui-text-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
-.mn-speed{height:28px;padding:0 4px;border:1px solid var(--mn-line);border-radius:6px;background:var(--ui-bg-input,transparent);color:inherit;font:inherit;font-size:12px}
+.mn-speed{height:28px;padding:0 4px;border:1px solid var(--mn-line);border-radius:6px;background:transparent;color:var(--ui-text-primary);font:inherit;font-size:12px}
+.mn select option{background:var(--ui-bg-elevated,var(--ui-bg-editor));color:var(--ui-text-primary)}
 .mn-seg{position:relative;display:grid;grid-template-columns:60px minmax(0,1fr);column-gap:10px;padding:6px 8px;border-radius:7px;scroll-margin-top:64px}
 .mn-seg[data-cont=true]{padding-top:0}
 .mn-seg:hover{background:var(--ui-row-hover-background,transparent)}
